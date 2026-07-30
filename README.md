@@ -29,14 +29,14 @@ environment details are documented in
 
 ## Experiments
 
-| Notebook | Experiment | Clean-checkout behavior |
-|---|---|---|
-| `nb_ou.ipynb` | Ornstein--Uhlenbeck spectrum | Generates data, fits the models, and creates the figures. |
-| `nb_triple_well.ipynb` | Triple-well metastable spectrum | Generates data, fits the models, and creates the figures. |
-| `nb_lorenz63.ipynb` | Lorenz-63 rollout | Uses versioned reference output when local training artifacts are unavailable. |
-| `nb_lorenz96.ipynb` | Lorenz-96 rollout | Uses versioned reference output when local training artifacts are unavailable. |
-| `nb_sst.ipynb` | Global SST rollout | Uses versioned reference output when locked evaluation artifacts are unavailable. |
-| `nb_eeg.ipynb` | Resting-state EEG rollout | Downloads the required public record and reruns the experiment. |
+| Notebook | Experiment |
+|---|---|
+| `nb_ou.ipynb` | Ornstein--Uhlenbeck spectrum |
+| `nb_triple_well.ipynb` | Triple-well metastable spectrum |
+| `nb_lorenz63.ipynb` | Lorenz-63 rollout |
+| `nb_lorenz96.ipynb` | Lorenz-96 rollout |
+| `nb_sst.ipynb` | Global SST rollout |
+| `nb_eeg.ipynb` | Resting-state EEG rollout |
 
 ## Reproducibility
 
