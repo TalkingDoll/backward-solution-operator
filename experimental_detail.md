@@ -1,27 +1,32 @@
 # Experimental Details
 
-## Document status and terminology
+## Purpose and terminology
 
-This document records the fixed reported configurations and results for all six experiments in this repository. Numerical values come from executed notebook outputs and the reference artifacts used to create the committed figures. Large raw datasets, checkpoints, and runtime result bundles are not distributed unless stated explicitly.
+This document is the reproducibility record for all six experiments. Sections
+2–7 contain the governing system or dataset, preprocessing and split, fixed
+configuration, evaluation protocol, reported result, and interpretation
+limits needed to draft a Numerical Experiments section. Section 8 maps every
+publication figure to its notebook and provides its copy-ready caption.
+Section 9 summarizes the principal result and limitation of each benchmark.
 
-The proposed method is called **BSO** throughout this document. The implementation uses an EDMD/Galerkin projection; Galerkin projection is a construction step, not the name of the method.
-
-Unless stated otherwise, experiments use random seed `2026`. The OU learned-dictionary stages use seed family `2033--2038`, as described in Section 2.4.
-
-### Manuscript-use convention
-
-Sections 2--7 are intended to be sufficient for drafting the Numerical
-Experiments section of a paper: each records the experiment objective, data
-or governing system, preprocessing and split, active model configuration,
-evaluation protocol, quantitative result, and interpretation limits.
-Section 8 maps every reported figure to its files and notebook cell and gives
-the exact caption printed below that figure in the notebook. Section 9 states
-the appropriate success criterion for each experiment, and Section 10
-collects cross-experiment reproducibility limits.
+Numerical values come from executed notebook outputs and the reference
+artifacts used to create the committed figures. Large raw datasets,
+checkpoints, and runtime result bundles are excluded from Git unless stated
+otherwise. The proposed method is the **backward solution operator (BSO)**;
+EDMD/Galerkin projection is its finite-dimensional construction step, not a
+separate method name. Unless stated otherwise, experiments use random seed
+`2026`; the OU learned-dictionary stages use seeds `2033–2038`.
 
 ## 1. Common computational framework
 
-The experiments learn the action of a finite-time Kolmogorov backward solution operator on observable fields. Given samples of an observable at times separated by a horizon `tau`, the common pipeline is:
+For a Markov process, the finite-time Kolmogorov backward solution operator is
+
+```math
+U_\tau f(x)=\mathbb{E}[f(X_\tau)\mid X_0=x].
+```
+
+The experiments learn its action on observable fields. Given samples separated
+by a horizon $\tau$, the common pipeline is:
 
 1. Construct one-step and, where used, two-step pairs `(u0, uT, u2T)`.
 2. Train a neural operator to approximate `u0 -> uT`.
@@ -49,8 +54,8 @@ equal to the epoch budget and `eta_min=0`, gradient-norm clipping at 5, and a
 seeded random validation split. EEG is an explicit exception: it trains on
 all 104 transition pairs for a fixed epoch budget, without a validation split
 or best-checkpoint selection. Unless a section states otherwise, Adam/AdamW
-use PyTorch defaults `betas=(0.9,0.999)`, `eps=1e-8`, and `amsgrad=False`;
-each table gives the experiment-specific learning rate and weight decay. With
+use PyTorch defaults `betas=(0.9,0.999)`, `eps=1e-8`, and `amsgrad=False`.
+With
 `F` denoting the neural operator and `ell_rel` the experiment's weighted or
 unweighted mean relative `L2`, its training objective is
 
@@ -61,7 +66,9 @@ unweighted mean relative `L2`, its training objective is
 +w_{\mathrm{const}}\mathrm{mean}(F\mathbf{1}-\mathbf{1})^2 .
 ```
 
-The constant term is active only where a nonzero weight is listed. Where a
+This objective applies to OU, Triple-well, Lorenz, and SST; EEG uses the
+squared relative-$L^2$ objective in Section 7.4. The constant term is active
+only where a nonzero weight is listed. Where a
 validation split is used, checkpoint selection uses the one-step validation
 `ell_rel(Fu_0,u_tau)` alone, without the semigroup or constant term. Phase-B
 neural-dictionary refinement uses Adam and the complete fitting dataset, with
@@ -89,7 +96,14 @@ The current artifacts and notebooks were validated in the following local enviro
 | pandas / xarray | 2.2.3 / 2025.1.2 |
 | Matplotlib | 3.10.1 |
 | MNE | 1.8.0 |
+| dask / Zarr | 2025.1.0 / 2.18.7 |
+| numcodecs / requests | 0.15.1 / 2.32.5 |
 | GPU | NVIDIA RTX 4000 SFF Ada Generation; CUDA 12.1 runtime |
+
+Preparing the SST source dataset additionally requires `dask`, `numcodecs`,
+`pandas`, `requests`, `xarray`, Zarr 2.x, and the applicable `fsspec` backend;
+anonymous access to the `gs://` source requires `gcsfs`. These downloader
+dependencies are not needed merely to display the committed reference figure.
 
 ### Experiment overview
 
@@ -127,7 +141,9 @@ Of the 384 initial functions, 117 are randomly selected enveloped Hermite modes 
 \lambda_n=-n,\qquad n=0,1,2,\ldots
 ```
 
-and provides an exact reference.
+and is used as the exact theoretical spectrum of the continuous,
+infinite-domain OU process. It is not the exact spectrum of the truncated
+finite-difference generator.
 
 ### 2.2 Neural operator
 
@@ -178,9 +194,10 @@ The second OU experiment learns slow functions sequentially without using analyt
 |---|---:|
 | Dictionary size | 20 |
 | Dictionary MLP | Tanh, hidden width 224, depth 4, 16 Fourier frequencies |
-| Deflation stages | 5 |
+| Deflation stages | 5 attempted; 2 accepted columns |
 | Epochs per deflation stage | 1,000 |
 | Deflation learning rate | `3e-4` |
+| Deflation / refinement weight decay | 0 / 0 |
 | Eigen-residual weight | 5.0 |
 | Consistency weight | 5.0 |
 | Non-expansiveness penalty | 10.0 |
@@ -286,7 +303,7 @@ The reported spectral reference uses the same finite-difference stencil on a sep
 
 On checkpoint loading, the frozen Phase-A operator has all-sample one-step relative `L2 = 2.5801e-2`. Phase B uses Adam without a scheduler or weight decay for 250 outer epochs and ten dictionary updates per epoch. Each operator data-loss update draws at most 24 of the 64 samples; the EDMD target is refreshed each outer epoch without symmetrization. There is no Phase-B two-step, smoothness, or spectral-radius penalty. The 48 MLP outputs are joined with the constant and orthonormalized by uniform-weight QR. The projected dictionary has effective rank `49/49` and reported Gram condition number `1.000e+0`.
 
-The quantitative spectrum composes the frozen Phase-A operator three times, forms the float64 EDMD matrix with ridge `1e-8`, pins the constant at `mu=1`, and then applies `(K+K^T)/2` before eigendecomposition. Because the projection geometry is uniform `L2(dx)` rather than the Gibbs invariant measure, this is a symmetry constraint motivated by reversibility, not an exact discrete `L2(rho)` self-adjoint projection. Generator values use `lambda=log(mu)/0.9`, with no spectral-radius clipping. The jointly refined one-step operator is used only in the eigenfunction display described below.
+The quantitative spectrum composes the frozen Phase-A operator three times, forms the float64 EDMD matrix with ridge `1e-8`, pins the constant at `mu=1`, and then applies `(K+K^T)/2` before eigendecomposition. Because the projection geometry is uniform `L2(dx)` rather than the Gibbs invariant measure, this is a symmetry constraint motivated by reversibility, not an exact discrete `L2(rho)` self-adjoint projection. Generator values use `lambda=log(mu)/0.9`, with no spectral-radius clipping. The reported spectral table therefore uses the frozen Phase-A FNO, whereas the qualitative eigenfunction display uses the jointly refined one-step operator.
 
 ### 3.3 BSO spectral result
 
@@ -324,6 +341,9 @@ with `sigma=10`, `rho=28`, and `beta=8/3`. The seed-2026 initial state is `[1,1,
 
 The leading 80% (12,000 times) is used for training and dictionary fitting; the trailing 20% (3,000 times) is held out for forecasting. Twenty smooth sensor sites lie at `s_j=j/20`, with `theta_j=2 pi s_j`. Define `X=x/8`, `Y=y/9`, and `Z=(z-25)/8`. The four deterministic families are:
 
+<details>
+<summary>Exact Lorenz-63 observable recipe</summary>
+
 - `ring_projection`: `X cos(theta)+Y sin(theta)+0.5 Z sin(2 theta)`;
 - `quadratic_moment`: `XY cos(theta)+(Z^2-1) sin(theta)+0.4 XZ cos(2 theta+0.7)`;
 - `nonlinear_sensor`: `tanh[X cos(theta)+Y sin(theta)+0.3Z]+0.25Z cos(2 theta+1)+0.15XY sin(theta+0.5)`;
@@ -337,6 +357,8 @@ e(s)=a_0+\sum_{h=1}^3 a_h\cos(2\pi h s+\varphi_h),
 a_h\sim\mathcal{N}(0,(0.55/h)^2),\quad
 \varphi_h\sim\mathcal{U}[0,2\pi].
 ```
+
+</details>
 
 Each of the 16 families contributes 256 uniformly spaced complete `(t,t+tau,t+2tau)` starts, for 4,096 FNO triples. Each family is normalized by one scalar mean and standard deviation computed jointly over all training times and sites; `1e-6` is added to the standard deviation. Forecast errors therefore refer to these dimensionless sensor curves.
 
@@ -376,28 +398,20 @@ E_k=\frac{\sqrt{\sum_{o,j}w_j(\hat y_{o,j,k}-y_{o,j,k})^2}}
 
 so it is a ratio after pooling origins and sites, not an average of 64 per-origin ratios. Forecast windows overlap and are not independent samples.
 
-| Horizon band | FNO mean relative `L2` | BSO mean relative `L2` |
-|---|---:|---:|
-| Short, `t <= 0.5` | 0.21264 | 0.23198 |
-| Middle, `0.5 < t <= 2` | 0.95675 | 0.94898 |
-| Long, `2 < t <= 11` | 1.19545 | 0.99582 |
-| All steps | 1.11007 | 0.94820 |
+| Horizon band | FNO mean relative `L2` | BSO mean relative `L2` | BSO reduction |
+|---|---:|---:|---:|
+| Short, `t <= 0.5` | 0.21264 | 0.23198 | -9.1% |
+| Middle, `0.5 < t <= 2` | 0.95675 | 0.94898 | 0.8% |
+| Long, `2 < t <= 11` | 1.19545 | 0.99582 | 16.7% |
+| All steps | 1.11007 | 0.94820 | 14.6% |
 
 `All steps` is the arithmetic mean over all 111 saved leads, including the
 initial value at `t=0`.
 
-The fitted transition has spectral radius `0.95780`, below the configured cap, so no eigenvalue clipping is active. Its eigenvector condition number is `1699.13`.
-
-| Time | Autoregressive FNO | BSO forecast |
-|---:|---:|---:|
-| 0.00 | 0.00000 | 0.000002 |
-| 0.10 | 0.06701 | 0.05675 |
-| 0.20 | 0.13999 | 0.13294 |
-| 0.50 | 0.54093 | 0.58452 |
-| 2.00 | 1.12008 | 1.08564 |
-| 11.00 | 1.07908 | 0.99344 |
-
-**Result note.** The BSO band means and selected lead values are listed above. The finite-dimensional rollout remains autonomous over `t = 0--11`.
+The fitted transition has spectral radius `0.95780`, below the configured cap,
+so no eigenvalue clipping is active. Its eigenvector condition number is
+`1699.13`. The finite-dimensional rollout remains autonomous over
+`t = 0--11`.
 
 ## 5. Lorenz-96 forecasting
 
@@ -419,6 +433,9 @@ with periodic indices and `F=8`. The seed-2026 initial state is `F 1 + 0.05 N(0,
 
 As in Lorenz-63, the first 12,000 observable times are used for training and the last 3,000 are held out. With periodic shifts denoted by subscripts, the four deterministic families are:
 
+<details>
+<summary>Exact Lorenz-96 observable recipe</summary>
+
 - `nonlinear_sensor`: `tanh[0.35x_i+0.08(x_{i-1}+x_{i+1})]+0.04x_i x_{i+1}`;
 - `local_energy`: `x_i^2+0.25(x_{i-1}^2+x_{i+1}^2)`;
 - `advective_tendency`: the Lorenz-96 right-hand side;
@@ -437,7 +454,11 @@ with `c~U[0,1]`, `w~U[0.08,0.25]`, `b~U[0.25,0.55]`, `a~U[-0.20,0.20]`, integer 
 - **Flux/energy:** `z U[0.45,1.05] a_d + U[0.12,0.34] e_l + N(0,0.18^2)p + N(0,0.16^2)g + N(0,0.14^2)x_i`, where `z` is equiprobably `-1` or `+1`, multiplied by `e(s)`.
 - **Spectral:** two to four terms are drawn; each uses an integer spatial frequency 1--6, a phase in `[0,2pi]`, and independent cosine/sine coefficients from `N(0,0.22^2)`. The resulting spatial weight multiplies `x_i`, with additions `N(0,0.18^2)e(s)x_i^2`, `N(0,0.14^2)e(s)x_i x_{i+1}`, and `N(0,0.08^2)e(s)tanh(0.25x_i)^3`.
 
-Every branch finally adds `0.04[e(s)-mean_s e(s)]g`. Each of the 16 families contributes 256 complete `(t,t+tau,t+2tau)` starts to FNO fitting, producing 4,096 triples. The BSO projection uses all 11,998 two-step-compatible starts `0,...,11997` from the training portion of `nonlinear_sensor`. Per-family normalization uses one scalar mean and standard deviation over all training times and sites, with `1e-6` added to the standard deviation. All BSO dictionary statistics use the training window only.
+Every branch finally adds `0.04[e(s)-mean_s e(s)]g`.
+
+</details>
+
+Each of the 16 families contributes 256 complete `(t,t+tau,t+2tau)` starts to FNO fitting, producing 4,096 triples. The BSO projection uses all 11,998 two-step-compatible starts `0,...,11997` from the training portion of `nonlinear_sensor`. Per-family normalization uses one scalar mean and standard deviation over all training times and sites, with `1e-6` added to the standard deviation. All BSO dictionary statistics use the training window only.
 
 ### 5.2 Full configuration
 
@@ -467,29 +488,17 @@ Its construction mirrors Lorenz-63: 20 standardized field values plus ten standa
 
 The stored result artifact evaluates 64 uniformly spaced held-out origins from test indices 0 through 2,698 for 300 transitions and 301 saved leads, corresponding to `t=0` through `t=6`; the notebook reads and displays those arrays. The pooled weighted relative `L2` definition is the same as in Section 4.3, with `w_j=1/20`; the overlapping forecast windows are not independent samples.
 
-| Forecast range | Autoregressive FNO | BSO forecast |
-|---|---:|---:|
-| Short, `t <= 0.3` | 0.64954 | 0.54786 |
-| Middle, `0.3 < t <= 1` | 1.31018 | 0.94774 |
-| Long, `1 < t <= 6` | 1.52026 | 0.99628 |
-| All saved leads | 1.44955 | 0.96680 |
+| Forecast range | Autoregressive FNO | BSO forecast | BSO reduction |
+|---|---:|---:|---:|
+| Short, `t <= 0.3` | 0.64954 | 0.54786 | 15.7% |
+| Middle, `0.3 < t <= 1` | 1.31018 | 0.94774 | 27.7% |
+| Long, `1 < t <= 6` | 1.52026 | 0.99628 | 34.5% |
+| All saved leads | 1.44955 | 0.96680 | 33.3% |
 
 `All saved leads` is the arithmetic mean over all 301 saved leads, including
-the initial value at `t=0`.
-
-| Time | Autoregressive FNO | BSO forecast |
-|---:|---:|---:|
-| 0.00 | 0.0000 | 0.0000 |
-| 0.02 | 0.1117 | 0.1093 |
-| 0.10 | 0.5234 | 0.4690 |
-| 0.20 | 0.8799 | 0.7337 |
-| 0.30 | 1.0687 | 0.8508 |
-| 0.50 | 1.2550 | 0.9429 |
-| 1.00 | 1.4174 | 0.9683 |
-| 2.00 | 1.5447 | 0.9945 |
-| 6.00 | 1.5176 | 0.9998 |
-
-**Result note.** The BSO band means and saved-lead values are listed above. Beyond the chaotic predictability time, the autonomous rollout approaches the training-distribution mean; long leads are not phase-accurate trajectory claims.
+the initial value at `t=0`. Beyond the chaotic predictability time, the
+autonomous rollout approaches the training-distribution mean; long leads are
+not phase-accurate trajectory claims.
 
 ## 6. Sea-surface-temperature forecasting
 
@@ -521,7 +530,7 @@ The eleven channels are:
 
 Daily SST and wind information come from the anonymous WeatherBench2 ERA5 store `gs://weatherbench2/datasets/era5/1959-2023_01_10-6h-64x32_equiangular_conservative.zarr`. SST is the daily mean of the 6-hourly field. Wind stress is derived from 10 m winds as `rho_air C_D |U| (u,v)`, with air density `1.225 kg m^-3` and drag coefficient `1.3e-3`, and then averaged daily.
 
-The other ocean-state fields come from the NOAA PSL NCEP GODAS public NCSS. Source variables are `sshg`, `pottmp@55m`, `pottmp@105m`, `ucur@5m`, `vcur@5m`, `dbss_obml`, `salt@5m`, and `thflx`, downloaded over `179 W--179 E, 74 S--65 N` after horizontal stride 6 and periodically linearly interpolated to the ERA5 target grid. Potential temperature is converted from kelvin to degrees Celsius and salinity from kg/kg to g/kg; SSH, currents, MLD, and heat flux use metres, m/s, metres, and W/m2 respectively, with positive heat flux downward. A GODAS monthly mean is exposed only on the first day of the following month and then forward-filled, preventing within-month future leakage. The preprocessing identifiers are `sst-data-v6-1993-2022` and `godas-ocean-state-causal-month-lag-v3`.
+The other ocean-state fields come from the NOAA PSL NCEP GODAS public NCSS. Source variables are `sshg`, `pottmp@55m`, `pottmp@105m`, `ucur@5m`, `vcur@5m`, `dbss_obml`, `salt@5m`, and `thflx`, downloaded over `179 W--179 E, 74 S--65 N` after horizontal stride 6 and periodically linearly interpolated to the ERA5 target grid. Potential temperature is converted from kelvin to degrees Celsius and salinity from kg/kg to g/kg; SSH, currents, MLD, and heat flux use metres, m/s, metres, and W/m² respectively, with positive heat flux downward. A GODAS monthly mean is exposed only on the first day of the following month and then forward-filled, preventing within-month future leakage. The preprocessing identifiers are `sst-data-v6-1993-2022` and `godas-ocean-state-causal-month-lag-v3`.
 
 ### 6.2 Data volume and chronological protocol
 
@@ -576,7 +585,7 @@ The frozen FNO advances 9,860 one-step fitting-window launch states by one day, 
 q_{\mathrm{target}}=0.6\,q_{\mathrm{observed}}+0.4\,q_{\mathrm{FNO}}.
 ```
 
-The BSO uses this blended target. A non-affine ridge map is fitted with equal weight for every consecutive day and regularization `0.01 trace(G)/rank`; the resulting numerical ridge coefficient is `0.6953112051`. The raw transition is then materialized through real-Schur block radial clipping. There are no delays, concatenated histories, recurrent states, higher-order autoregressions, or memory kernels.
+The BSO uses this blended target. A linear ridge map without an intercept is fitted with equal weight for every consecutive day and regularization `0.01 trace(G)/rank`; the resulting numerical ridge coefficient is `0.6953112051`. The raw transition is then materialized through real-Schur block radial clipping. There are no delays, concatenated histories, recurrent states, higher-order autoregressions, or memory kernels.
 
 | BSO setting | Value |
 |---|---:|
@@ -659,18 +668,6 @@ Climatology ACC is `N/A`, not zero: subtracting the same target-date climatology
 
 The BSO band-mean bias and anomaly RMS-amplitude ratio are `-0.0253 K / 0.858`, `-0.0662 K / 0.691`, and `-0.1060 K / 0.526` for days 1--10, 11--30, and 31--90, respectively. They diagnose a progressively cool and under-dispersive anomaly field; they are not additional selection objectives.
 
-Representative BSO point leads are:
-
-| Lead | RMSE | Centered anomaly ACC |
-|---:|---:|---:|
-| 1 day | `0.1154` | `0.981` |
-| 3 days | `0.1948` | `0.946` |
-| 7 days | `0.2901` | `0.877` |
-| 14 days | `0.3708` | `0.789` |
-| 30 days | `0.4445` | `0.678` |
-| 60 days | `0.4976` | `0.590` |
-| 90 days | `0.5234` | `0.548` |
-
 ### 6.9 540-day rollout-stability result
 
 The stress-test figure contains two logarithmic RMSE panels with identical learned-rollout curves over 48 origins. The left panel shows the complete finite dynamic range; the right panel restricts the visible range to `10^-1--10^3 K` so the bounded BSO curve, growing FNO curve, and early SFNO explosion can be distinguished:
@@ -693,28 +690,14 @@ The detailed numerical summaries remain documented in Sections 6.8--6.9 and
 require the ignored metric archives to recompute; the fallback must not be
 described as a fresh model fit or metric recomputation.
 
-The implementation is organized under `experiments/sst/`:
-
-- `experiments/sst/download_sst_data.py` prepares the local dataset;
-- `experiments/sst/exp_sst.py` provides training and evaluation commands;
-- `experiments/sst/sst_model.py` defines the structured BSO; and
-- `experiments/sst/sst_evaluation.py` implements the fixed fit and evaluation protocol.
-
-The large prepared Zarr, selection lock, model checkpoints, frozen recipe,
-and numerical metric archives are intentionally ignored by Git. With those
-artifacts supplied locally, the available command interfaces are:
-
-```text
-python -m experiments.sst.download_sst_data
-python -m experiments.sst.exp_sst --help
-python -m experiments.sst.exp_sst evaluation fit --help
-python -m experiments.sst.exp_sst evaluation preflight-evaluate --help
-python -m experiments.sst.exp_sst evaluation evaluate --help
-```
-
-The numerical values in Sections 6.8--6.9 and the committed figures are the
-fixed reference result. Full retraining is hardware-intensive and is not
-bitwise guaranteed across library builds or GPU architectures.
+The implementation is under `experiments/sst/`: `download_sst_data.py`
+prepares the dataset, `exp_sst.py` exposes the command-line interface,
+`sst_model.py` defines the structured BSO, and `sst_evaluation.py` implements
+the locked protocol. The prepared Zarr, selection lock, checkpoints, frozen
+recipe, and metric archives are intentionally ignored by Git. The values in
+Sections 6.8–6.9 and the committed figures are the fixed reference result;
+full retraining is hardware-intensive and is not bitwise guaranteed across
+library builds or GPU architectures.
 
 ## 7. EEG resting-state rollout
 
@@ -733,7 +716,7 @@ The method is called **BSO** in the manuscript and figure. The internal
 reproduction key `FNO-BSO` records that this instance uses an FNO backbone; it
 does not denote a separate method.
 
-R02 is one continuous eyes-closed `T0` baseline with no task cue or recorded
+R02 is one continuous eyes-closed baseline recording with no task cue or recorded
 control input. It is therefore treated as approximately autonomous. This is
 an approximation: resting EEG remains nonstationary and is affected by
 unobserved physiological inputs.
@@ -908,9 +891,9 @@ clip 5.
 | Component | Active configuration |
 |---|---|
 | BSO field operator | Temporal FNO: width 48, 64 Fourier modes, 2 layers, 100 epochs, learning rate `7e-4`, weight decay `2e-5`. |
-| BSO projection | PCA $q=4$; dictionary size 25 with hidden widths `[16,16]`; 300 Adam epochs; learning rate `7e-4`; transition ridge `3e-6`. |
+| BSO projection | PCA $q=4$; dictionary size 25 with hidden widths `[16,16]`; 300 Adam epochs; learning rate `7e-4`; weight decay 0; transition ridge `3e-6`. |
 | Direct FNO | Temporal FNO: width 48, 32 Fourier modes, 2 layers, 160 epochs, learning rate `7e-4`, weight decay `2e-5`; prediction is the raw autoregressive FNO output. |
-| EDMD-DL | PCA $q=20$; dictionary size 25 with hidden widths `[16,16]`; 120 Adam epochs; learning rate `1e-3`; transition ridge `0.1`. |
+| EDMD-DL | PCA $q=20$; dictionary size 25 with hidden widths `[16,16]`; 120 Adam epochs; learning rate `1e-3`; weight decay 0; transition ridge `0.1`. |
 | Kernel EDMD | PCA $q=8$; Gaussian bandwidth `0.2` times the training-state median distance; ridge `1e-10`; all 104 training states are kernel landmarks. |
 | PCA-VAR | Affine VAR(1) on PCA $q=10$; ridge `1e-6`. |
 
@@ -942,11 +925,6 @@ At step 40, the reduction relative to the best non-BSO comparator is
 \frac{0.873672634-0.749440902}{0.873672634}
 =14.219\%.
 ```
-
-The reference environment used Python 3.11.15, NumPy 1.26.4, SciPy 1.14.1,
-MNE 1.8.0, PyTorch 2.5.1+cu121, neuraloperator 1.0.2, CUDA 12.1, and an
-NVIDIA RTX 4000 SFF Ada GPU. Fixed seeds reduce variation, but bitwise
-equality is not guaranteed across hardware or library builds.
 
 The 15--19 second result is the fixed reported endpoint, not an independently
 sealed test.
@@ -985,9 +963,11 @@ numerical results are ignored by Git; the reference figure is versioned.
   is not an unbiased estimate of performance on a newly sealed EEG window.
 - No uncertainty interval is available from a single rollout.
 
-## 8. Figure-by-figure guide for manuscript use
+## 8. Publication figures and copy-ready captions
 
-The repository contains eleven distinct scientific figures. Each PDF/PNG pair below is the same figure in vector and raster form and is counted once; the PDF is preferable for manuscript insertion. Figure numbers are intentionally not assigned here so that the manuscript can order them independently.
+The repository contains eleven scientific figures. Each PDF/PNG pair is one
+figure; use the vector PDF for manuscript insertion. Every plotting cell
+prints the corresponding caption below the figure.
 
 | ID | Experiment and content | Files | Notebook order |
 |---|---|---|---|
@@ -1003,241 +983,107 @@ The repository contains eleven distinct scientific figures. Each PDF/PNG pair be
 | SST-2 | 540-day SST rollout stability | [PDF](figures/sst/sst_rollout_stability.pdf) / [PNG](figures/sst/sst_rollout_stability.png) | `nb_sst.ipynb`, figure 2 |
 | EEG-1 | Four-second resting-state rollout | [PDF](figures/eeg/eeg_rollout_comparison.pdf) / [PNG](figures/eeg/eeg_rollout_comparison.png) | `nb_eeg.ipynb`, only figure |
 
-### 8.1 OU figures
+### 8.1 Copy-ready captions
 
 #### OU-1: fixed-dictionary generator eigenvalues
-
-**What is shown.** The single panel compares the analytic generator values `lambda_n=-n`, `n=0,...,6` (red open circles), with the real part of the independently nearest BSO value obtained using the 20-column fixed enveloped-Hermite dictionary (blue crosses). It uses the one-step `tau=0.15` EDMD projection with ridge `1e-5`. The small imaginary part of the matched `n=3` value, `0.001382i`, is not represented because the vertical axis shows only `Re(lambda)`.
-
-**Result read from the figure and saved output.** The six nonconstant errors for `n=1,...,6` are `3.375e-4, 2.921e-4, 2.216e-3, 2.709e-3, 1.388e-3, 1.089e-3`. Their mean absolute error is `0.001338`, and the maximum displayed error is `0.002709`. The red and blue markers therefore nearly overlap at the plotted scale.
-
-**Paper interpretation.** This is a controlled validation of the learned finite-time operator and EDMD projection when the correct analytic function family is supplied. It should not be presented as automatic discovery of the OU spectrum by a learned dictionary.
-
-**Caption-ready text.**
 
 > OU generator eigenvalues from the learned one-step solution operator projected onto a fixed enveloped-Hermite dictionary. Red circles denote the analytic spectrum $\lambda_n=-n$, and blue crosses denote the nearest BSO estimates; the first six nonconstant modes have mean absolute error 0.001338.
 
 #### OU-2: fixed-dictionary eigenfunctions
 
-**What is shown.** The `2 x 3` panels contain modes 0--5. Black dashed curves are analytic Hermite eigenfunctions and blue curves are the BSO eigenfunctions. The BSO sign is aligned using the full discrete `L2(rho)` inner product; the analytic and BSO curves are then separately normalized by their maximum absolute value on the displayed interval `|x|<=3`.
-
-**Result read from the figure.** The BSO and Hermite curves are visually coincident for the stationary, linear, quadratic, and higher displayed modes; only small high-order boundary differences are visible. The panel titles report approximately `0, -1.000, -2.000, -3.002, -4.003, -5.001`.
-
-**Paper interpretation.** The fixed dictionary reproduces the analytic eigenfunction shapes over the high-probability part of the invariant measure. Because the function family is supplied in advance and amplitudes are normalized separately, the figure establishes shape recovery rather than data-driven discovery or amplitude accuracy.
-
-**Caption-ready text.**
-
 > Leading OU BSO eigenfunctions from the fixed enveloped-Hermite dictionary compared with analytic Hermite modes on $|x|\leq 3$. Curves are independently normalized and sign-aligned, so the panels compare spatial shape rather than amplitude.
 
 #### OU-3: learned-dictionary generator eigenvalues
-
-**What is shown.** Red circles again show `lambda_n=-n`; green crosses show the independently nearest BSO generator value from the learned 20-dimensional dictionary consisting of a pinned constant, two accepted deflation columns, and 17 joint-network columns. The final one-step projected matrix is symmetric.
-
-**Result read from the figure and saved output.** For targets `n=0,...,6`, the displayed matched values are approximately `0, -0.865, -1.959, -2.851, -4.021, -5.650, -5.650`, with errors `0, 0.135, 0.041, 0.149, 0.021, 0.650, 0.350`. The `n=0,...,5` mean and standard deviation are `0.1660` and `0.2236`. Targets 5 and 6 reuse the same nearest BSO eigenvalue because this OU display performs independent nearest matching rather than one-to-one assignment.
-
-**Paper interpretation.** Training without analytic eigenvalue targets recovers several slow decay rates, particularly those near `-2` and `-4`, but accuracy is mode-dependent and the fifth nonconstant target is visibly weak. The figure does not support a claim of uniformly accurate learned-spectrum recovery.
-
-**Caption-ready text.**
 
 > OU generator eigenvalues obtained with the learned 20-function dictionary. Red circles show $\lambda_n=-n$, and green crosses show the independently nearest BSO estimate for each target; a BSO value may therefore be reused. The first six targets, including the stationary mode, have mean absolute error 0.1660.
 
 #### OU-4: learned-dictionary eigenfunctions
 
-**What is shown.** The `2 x 3` panels compare modes 0--5 on `|x|<=3`: analytic Hermite references are black dashed and learned-dictionary BSO fields are green. The displayed BSO eigenvalues are approximately `0, -0.865, -1.959, -2.851, -4.021, -5.650`. Visualization applies four operator propagations, division by the corresponding `mu^4`, one projection onto the degree-10 polynomial space, analytic parity symmetrization, normalization, and sign alignment.
-
-**Result read from the figure.** Modes 0, 1, and 3 closely reproduce the large-scale reference shape. Modes 2 and 4 retain the correct parity and nodes but show visible curvature or edge differences. Mode 5 has the largest shape discrepancy, consistent with its `0.650` eigenvalue error.
-
-**Paper interpretation.** The learned dictionary captures the parity, nodal structure, and overall geometry of several slow modes, while the higher displayed mode is less reliable. Because analytic parity and other display postprocessing are applied, the plotted overlap is not a raw eigenfunction-error measurement.
-
-**Caption-ready text.**
-
 > Postprocessed OU BSO eigenfunctions from the learned dictionary compared with analytic Hermite modes on $|x|\leq 3$. The panels assess parity, nodal structure, and large-scale shape after polynomial projection, parity symmetrization, normalization, and sign alignment.
 
-### 8.2 Triple-well figures
-
 #### TW-1: finite-time eigenvalues
-
-**What is shown.** The panel is the complex finite-time multiplier plane, not the generator-`lambda` plane. The dashed curve is the unit circle. Blue crosses are the 12 BSO values with largest `|mu|`; red circles are six `128 x 128` finite-difference generator references mapped by `mu=exp(0.9 lambda)`. Labels 1--3 identify the leading three BSO discrete modes. The quantitative generator comparison uses one-to-one Hungarian matching.
-
-| Mode | FD `mu` | BSO `mu` | FD `lambda` | BSO `lambda` |
-|---|---:|---:|---:|---:|
-| Stationary | 1.0000 | 1.0000 | 0.0000 | 0.0000 |
-| Slow nonconstant 1 | 0.9157 | 0.9347 | -0.0979 | -0.0751 |
-| Slow nonconstant 2 | 0.4933 | 0.3845 | -0.7851 | -1.0619 |
-
-**Result read from the figure and saved output.** The six-mode generator MAE is `0.0649`, with maximum error `0.2768` at the second nonconstant rate. The complete projected spectrum has maximum `|mu|=1` and no expanding multiplier outside the unit circle.
-
-**Paper interpretation.** The projected BSO preserves the stationary mode and approximates the slowest exchange rate, while the second nonconstant rate remains the principal spectral error. Location inside the unit circle describes this fitted projection; it is not a proof of stability for arbitrary data or configurations.
-
-**Caption-ready text.**
 
 > Leading triple-well BSO multipliers at $T_{\mathrm{eff}}=3\tau=0.9$ compared with finer-grid finite-difference references mapped to the same horizon. Blue crosses show the 12 largest-$|\mu|$ BSO values and red circles the six references; one-to-one generator matching gives mean absolute error 0.0649.
 
 #### TW-2: metastable eigenfunctions
 
-**What is shown.** The three heat maps are the leading BSO eigenfunctions. `phi_1` with `lambda=0` is the stationary constant mode. `phi_2` with `lambda=-0.075` is odd in `x` and separates the left and right lower wells. `phi_3` with `lambda=-1.062` is even in `x` and separates the upper well from the lower pair. The panels use independent color ranges.
-
-**Result read from the figure.** The spatial sign patterns recover the expected three-well metastable partition: one slow left--right coordinate and one upper--lower coordinate. The figure contains no finite-difference eigenfunction overlay or eigenfunction-error norm. The constant panel is explicitly replaced by a spatial constant. Each nonconstant field is propagated four times by the jointly refined one-step operator and divided by `exp(lambda tau)^4`, then centered, parity-constrained, sign-anchored, and smoothed with a Gaussian of `sigma=7` grid pixels. The second mode additionally uses display gamma `0.75`; the three color ranges are `[-1,1]`, `[-1.2,1.2]`, and `[-0.5,1.5]`.
-
-**Paper interpretation.** The eigenfunction topology is consistent with the physical metastable decomposition. The figure supports a qualitative partition claim, not quantitative equality to finite-difference eigenfunctions or comparison of amplitudes across panels.
-
-**Caption-ready text.**
-
 > Leading triple-well BSO eigenfunctions on the triple-well state-space domain. The stationary mode is followed by an odd left--right partition and an even upper-versus-lower partition of the three wells; panels use independent display scales and visualization postprocessing, including symmetry constraints and smoothing.
 
-### 8.3 Lorenz forecast figures
-
 #### L63-1: Lorenz-63 relative forecast error
-
-**What is shown.** The three panels report pooled relative `L2` error over 64 overlapping origins and 20 normalized `nonlinear_sensor` sites. Blue circles are the autoregressive frozen FNO and red squares are the 140-dimensional degree-2--4 polynomial-PCA BSO. The panels cover short `t<=0.5`, middle `0.5<t<=2`, and long `2<t<=11` ranges with independent vertical scales; the short panel uses a log scale.
-
-| Range | FNO mean | BSO mean |
-|---|---:|---:|
-| Short | 0.21264 | 0.23198 |
-| Middle | 0.95675 | 0.94898 |
-| Long | 1.19545 | 0.99582 |
-| All saved leads | 1.11007 | 0.94820 |
-
-**Result read from the figure.** At `t=0.1`, FNO/BSO errors are `0.06701/0.05675`; at `t=0.5`, they are `0.54093/0.58452`; at `t=2`, `1.12008/1.08564`; and at `t=11`, `1.07908/0.99344`. BSO is lower at 102 of the 110 positive leads, but the short-range band mean is slightly higher because several leads favor FNO.
-
-**Paper interpretation.** BSO is broadly comparable at short and intermediate leads and has a lower long-range error plateau. Errors near unity after chaotic decorrelation do not represent phase-accurate long-range trajectories.
-
-**Caption-ready text.**
 
 > Pooled relative $L^2$ forecast error over 64 overlapping origins from the held-out Lorenz-63 sensor trajectory. The autoregressive frozen FNO and 140-dimensional polynomial-PCA BSO are shown over short, middle, and long lead panels with independent vertical scales; the short panel is logarithmic. BSO is comparable at short and intermediate leads and has lower long-range mean error.
 
 #### L96-1: Lorenz-96 relative forecast error
 
-**What is shown.** The same pooled metric is evaluated over 64 overlapping origins and 20 normalized `nonlinear_sensor` sites. Blue circles are FNO and red squares are the 30-dimensional quadratic four-PCA-coordinate BSO. The three independent linear-scale panels cover short `t<=0.3`, middle `0.3<t<=1`, and long `1<t<=6`.
-
-| Range | FNO mean | BSO mean | BSO reduction |
-|---|---:|---:|---:|
-| Short | 0.64954 | 0.54786 | 15.7% |
-| Middle | 1.31018 | 0.94774 | 27.7% |
-| Long | 1.52026 | 0.99628 | 34.5% |
-| All saved leads | 1.44955 | 0.96680 | 33.3% |
-
-**Result read from the figure.** BSO is lower at all 300 positive leads. Representative FNO/BSO values are `0.5234/0.4690` at `t=0.1`, `1.0687/0.8508` at `t=0.3`, `1.4174/0.9683` at `t=1`, and `1.5176/0.9998` at `t=6`.
-
-**Paper interpretation.** For this fixed held-out trajectory and metric, BSO improves every predefined lead band and avoids the FNO error plateau near 1.5. Its own long-range plateau near 1 reflects a stable return toward the training-distribution center, not phase-accurate forecasting.
-
-**Caption-ready text.**
-
 > Pooled relative $L^2$ forecast error over 64 overlapping origins from the held-out Lorenz-96 sensor trajectory. The autoregressive frozen FNO and 30-dimensional quadratic-PCA BSO are shown over short, middle, and long lead panels with independent linear vertical scales. BSO is lower at every positive lead and has 33.3% lower all-lead mean error.
 
-For both Lorenz figures, adjacent visual panels repeat their boundary point, while the numerical band means use the nonoverlapping inequalities stated above. In L63, the exactly zero FNO initial error is drawn at `1e-8`; the stored BSO initial error is `2.049e-6` and is not floored. In L96, both initial points are drawn at `1e-8`, while their stored FNO/BSO values are `0/1.243e-10`. These plotting floors are not measured errors. The errors are for normalized sensor curves rather than the hidden Lorenz state, the forecast windows overlap, and no confidence interval or significance test is shown.
-
-### 8.4 SST figures
-
 #### SST-1: 1--90-day forecast skill
-
-Formal assets: [PDF](figures/sst/sst_forecast_skill.pdf), [PNG](figures/sst/sst_forecast_skill.png), and [caption text](figures/sst/sst_forecast_skill_caption.txt).
-
-**What is shown.** All curves use the 1993--2019 fit and 96 held-out 2020--2022 origins. The upper-left and upper-right panels show physical SST RMSE and MAE for days 1--30 on linear scales. The lower-left panel shows days 1--90 RMSE on a log scale, and the lower-right shows centered anomaly ACC through day 90. Calendar-day climatology has zero forecast anomaly and undefined ACC, so it is absent from the ACC panel. SFNO ends after day 51 because a strict complete-cohort score is no longer available, not because observations are missing.
-
-| Lead band | BSO `RMSE / MAE / ACC` | Damped persistence | FNO | SFNO |
-|---|---|---|---|---|
-| 1--10 | `0.2455 / 0.1750 / 0.905` | `0.2391 / 0.1658 / 0.908` | `0.2605 / 0.1892 / 0.896` | `0.2681 / 0.1989 / 0.885` |
-| 11--30 | `0.4053 / 0.2921 / 0.739` | `0.3862 / 0.2707 / 0.762` | `0.5967 / 0.4351 / 0.615` | `0.6250 / 0.4763 / 0.553` |
-| 31--90 | `0.4933 / 0.3601 / 0.598` | `0.5053 / 0.3651 / 0.583` | `1.7531 / 1.0756 / 0.231` | Incomplete |
-
-**Result read from the figure and saved output.** Damped persistence is slightly better than BSO over days 1--30. Over days 31--90, BSO has lower RMSE and higher ACC than damped persistence and is substantially better than FNO and raw persistence. BSO is continuously lower-RMSE than damped persistence from day 46 onward. At day 90, BSO gives `0.5234 K` RMSE and `0.548` ACC, compared with FNO at `2.8151 K/0.105` and damped persistence at `0.5573 K/0.499`.
-
-**Paper interpretation.** BSO is close to the strongest statistical reference at short leads and retains useful relative skill over days 31--90, while direct autoregressive FNO/SFNO degrade more rapidly. The result is for one chronological split and seed and is not a statistical-significance statement.
-
-**Caption-ready text.**
 
 > Global SST forecast skill over 96 held-out 2020--2022 origins after fitting on 1993--2019. Eleven ocean--atmosphere fields initialize learned methods, but only SST is verified. Panels show area-weighted RMSE and MAE through day 30, and RMSE and centered anomaly ACC through day 90. BSO is competitive with damped persistence at short leads and best among complete-band methods over days 31--90; SFNO ends when complete-cohort scores become unavailable.
 
 #### SST-2: 540-day numerical rollout stability
 
-Formal assets: [PDF](figures/sst/sst_rollout_stability.pdf), [PNG](figures/sst/sst_rollout_stability.png), and [caption text](figures/sst/sst_rollout_stability_caption.txt).
-
-**What is shown.** This two-panel figure uses a separate 48-origin cohort. Every model is rolled out daily through day 540, with 96 leads used for reporting. Both panels contain the same logarithmic physical SST RMSE curves pooled over all 48 origins and all weighted ocean grid points. The left panel retains the complete finite dynamic range. The right panel changes only the displayed vertical range to `10^-1--10^3 K`; it does not clip or alter the saved predictions or metrics. Every finite value is retained regardless of magnitude, and a curve stops only when one origin produces `NaN` or infinity because the 48-origin RMSE is then undefined. The figure uses one shared title and legend, numerical vertical-axis ticks, and no separate vertical-axis label.
-
-**Result read from the figure and saved output.**
-
-- BSO remains finite for the complete 48-origin cohort and reaches day 540 with RMSE `0.6551 K`.
-- FNO remains finite through day 540 but its RMSE grows to `816.327 K`.
-- SFNO reaches `1.2046e35 K` at day 170 and first produces `NaN` or infinity at day 171.
-- In the zoomed panel, SFNO rises from `136.687 K` at day 55 to `4368.483 K` at day 60 and therefore exits the `10^3 K` display range early; FNO and BSO remain visible through day 540.
-
-**Paper interpretation.** BSO keeps the 48-origin SST RMSE bounded over 540 days. Direct autoregressive FNO remains finite but reaches physically meaningless error, while SFNO grows by many orders of magnitude before becoming nonfinite. This is only a numerical-stability statement. FNO/SFNO finiteness is checked on the complete 11-channel state, while BSO finiteness is checked on decoded SST, so the figure is not a fully identical-state-space comparison and does not establish useful 540-day forecast skill.
-
-**Caption-ready text.**
-
 > Area-weighted physical SST RMSE in a 540-day numerical stability test over 48 origins, shown over full and zoomed logarithmic ranges. BSO remains bounded, FNO reaches 816.327 K at day 540, and SFNO becomes nonfinite at day 171. FNO/SFNO validity uses the full 11-channel state, whereas BSO uses decoded SST; this is not a long-range skill ranking.
-
-### 8.5 EEG figure
 
 #### EEG-1: four-second resting-state rollout
 
-**What is shown.** The line plot reports cumulative relative `L2` error from
-rollout steps 1--40, with one step equal to 0.1 seconds. It compares BSO,
-direct FNO, EDMD-DL, Gaussian-kernel EDMD, and PCA-VAR on the same continuous
-15--19 second segment of S029R02. There is one rollout, so no uncertainty
-band is shown.
-
-**Result read from the figure and saved output.** At step 40, BSO has
-error `0.749440902`; FNO, EDMD-DL, kernel EDMD, and PCA-VAR have errors
-`0.873672634`, `0.940987390`, `0.944762509`, and `0.963201524`.
-The reduction relative to the best non-BSO comparator is `14.219%`.
-
-**Paper interpretation.** This fixed single-subject, single-run result shows
-a lower cumulative rollout error for the configured BSO method. It is
-not a population benchmark, confidence interval, or independently sealed
-test.
-
-**Caption-ready text.**
-
 > Cumulative relative $L^2$ error for a four-second rollout treated as autonomous on the S029R02 eyes-closed resting EEG record. Each step advances 0.1 seconds, and all methods use the same 15--19 second forecast window. BSO has the lowest step-40 error, 14.219% below direct FNO; the result covers one subject, one run, and one rollout.
 
-## 9. How success is judged across experiments
+## 9. Reporting summary
 
-The experiments answer different questions and should not be ranked by one universal metric.
+The benchmarks answer different scientific questions and should not be ranked
+by one universal metric.
 
-- **OU:** the experiment reports generator eigenvalues and Hermite eigenfunctions for the fixed and learned dictionaries.
-- **Triple well:** the experiment reports metastable modes and finer-grid finite-difference decay rates. The one-to-one six-mode table has mean absolute error `0.0649` and maximum error `0.2768`.
-- **Lorenz-63 and Lorenz-96:** the experiments report held-out relative error over their stated lead ranges.
-- **SST:** formal forecast skill is reported only over days 1--90 using RMSE, MAE, centered anomaly ACC, and the stated persistence/climatology references. The separate 540-day BSO/FNO/SFNO test reports numerical rollout stability and is not a long-range forecast-skill assessment.
-- **EEG:** the experiment reports cumulative relative `L2` over one four-second resting-state rollout. Its principal comparison is the step-40 error against the best non-BSO method.
+| Experiment | Principal reported result | Main interpretation limit |
+|---|---|---|
+| OU | Fixed-dictionary MAE `0.001338` over the first six nonconstant generator modes; learned-dictionary MAE `0.1660` over targets 0–5 | The fixed dictionary supplies the analytic function family; learned eigenfunction panels include postprocessing |
+| Triple well | Six-mode generator MAE `0.0649`, maximum error `0.2768`; leading eigenfunctions recover the three-well partition qualitatively | No quantitative eigenfunction reference or repeated-seed interval |
+| Lorenz-63 | All-lead mean relative $L^2$: BSO `0.94820`, FNO `1.11007` (14.6% reduction) | Short-band BSO mean is 9.1% higher; the held-out tail is not a newly sealed blind test |
+| Lorenz-96 | All-lead mean relative $L^2$: BSO `0.96680`, FNO `1.44955` (33.3% reduction) | Long-range values measure stable statistical behavior, not phase-accurate trajectories |
+| SST | Over days 31–90, BSO gives `0.4933 K / 0.3601 K / 0.598` RMSE/MAE/ACC and remains bounded in the separate 540-day stress test | One chronological split and seed; the 540-day result is numerical stability, not forecast skill |
+| EEG | Four-second cumulative relative $L^2$: BSO `0.749440902`, 14.219% below direct FNO | One subject, one run, one forecast window, and no uncertainty interval |
 
 ## 10. Reproducibility and scope limits
 
-- The submitted manuscript and archived code release should identify the
-  immutable Git commit, tag, or release DOI used for the final figures; a
-  mutable working tree is not a publication identifier.
-- Reported figures and tables use executed notebook outputs or committed reference figures. Large raw datasets, checkpoints, and runtime result bundles are ignored by Git.
-- The controlled experiments compare spectra on generated equations, the Lorenz and SST experiments use held-out chronological data, and EEG uses one fixed continuous resting-state window. These result types are not directly interchangeable.
-- SST auxiliary variables are state inputs, not additional forecast targets, and no future auxiliary observation is used during rollout.
-- The SST evaluation uses seed 2026 and GPU execution. The FNO and SFNO checkpoints both completed the configured 180 epochs.
-- The SST reference result uses the fixed recipe recorded in Section 6; its large evaluated bundle is a local ignored artifact.
-- One seed is reported for each experiment; there are no formal confidence intervals or significance tests. The SST forecast-skill origins overlap across 96 ninety-day trajectories, and the stability origins overlap across 48 540-day trajectories. The skill bands average daily leads.
-- The controlled Phase-B refinements reuse the full fitting datasets, and the Lorenz checkpoint-loading diagnostics are recomputed on all cached fitting pairs. These values must not be described as independent held-out scores.
-- The Lorenz chronological tails are standing repository benchmarks that were available during method development; they are held out from fitting but are not newly sealed blind tests.
-- The OU and Triple-well `fno.pt` files retain neural-operator weights and structural metadata but not the optimizer state, completed epochs, best-validation history, seed, or full training recipe; their cached datasets also do not embed the generation seed. The OU `galerkin.pt` does not retain the complete joint/projection configuration or deflation-stage residual log. Their fixed settings in this document are therefore sourced jointly from current code, notebook calls, checkpoints, and executed outputs rather than from one self-contained artifact.
-- The Lorenz `fno.pt` files retain architecture and weights but not the recorded optimizer, epoch, or validation history. Their entry scripts load those checkpoints and do not retrain them.
-- The EEG result uses one subject, one resting run, 104 overlapping transitions, and one forecast window; its reported advantage has no population-level uncertainty estimate.
-- The code seeds NumPy, PyTorch, and CUDA where applicable but does not enable deterministic CUDA algorithms. A full GPU retraining run is not guaranteed to be bitwise identical.
-- The scalar neural-operator wrapper expects an explicit channel dimension, so Lorenz sensor batches must include a singleton channel axis.
-- Raw downloaded data, checkpoints, and transient runtime outputs are excluded from Git. Committed figures and notebook outputs provide the reference presentation. OU, Triple-well, and EEG can recompute from their notebook entry points; full Lorenz and SST numerical regeneration requires the corresponding ignored local artifacts.
+- Reported values use one fixed run/seed configuration per experiment; no
+  repeated-seed ensemble, confidence interval, or significance test is
+  reported.
+- Generated spectral benchmarks, chronological Lorenz/SST forecasts, and the
+  single EEG window answer different questions. Their metrics are not directly
+  interchangeable.
+- Forecast origins overlap in Lorenz, SST, and EEG. Phase-B refinements reuse
+  fitting data, and fitting-set diagnostics are not held-out scores.
+- The Lorenz chronological tails and EEG window were available during method
+  development; they are held out from fitting but are not newly sealed blind
+  tests.
+- SST auxiliary variables are launch-state inputs, not forecast targets, and
+  no future auxiliary observations are supplied during rollout.
+- Raw data, checkpoints, and runtime result bundles are ignored by Git.
+  Committed figures and notebook outputs preserve the reference presentation.
+  Full Lorenz and SST numerical regeneration requires the corresponding local
+  artifacts.
+- Available compact checkpoints do not retain every optimizer state,
+  validation history, or generation seed. The fixed recipes therefore combine
+  current code, notebook calls, checkpoints, and executed outputs.
+- NumPy, PyTorch, and CUDA are seeded where applicable, but deterministic CUDA
+  algorithms are not enforced; retraining is not guaranteed to be bitwise
+  identical across hardware or library builds.
+- A manuscript or archived release should cite an immutable commit, tag, or
+  release DOI rather than a mutable working tree.
 
-Primary entry points are:
+The six `nb_*.ipynb` files are the presentation entry points. OU,
+Triple-well, and EEG recompute directly; EEG downloads its public record when
+needed. Lorenz-63, Lorenz-96, and SST use local numerical artifacts when
+available and otherwise display committed reference figures. Full training
+and evaluation are explicit command-line tasks:
 
 ```text
-python -m experiments.ou.exp_ou
-python -m experiments.triple_well.exp_triple_well
-python -m experiments.lorenz63.exp_lorenz63
-python -m experiments.lorenz96.exp_lorenz96
-python -m experiments.sst.download_sst_data
-python -m experiments.sst.exp_sst
-python -m experiments.sst.exp_sst evaluation <fit|preflight-evaluate|evaluate> ...
-python -m experiments.eeg.exp_eeg_resting_reproduction --download
+python -m experiments.ou.exp_ou --help
+python -m experiments.triple_well.exp_triple_well --help
+python -m experiments.lorenz63.exp_lorenz63 --help
+python -m experiments.lorenz96.exp_lorenz96 --help
+python -m experiments.sst.download_sst_data --help
+python -m experiments.sst.exp_sst --help
+python -m experiments.sst.exp_sst evaluation <fit|preflight-evaluate|evaluate> --help
+python -m experiments.eeg.exp_eeg_resting_reproduction --help
 ```
-
-The six experiment notebooks (`nb_*.ipynb`) are the presentation entry
-points. OU, Triple-well, and EEG run their computations directly. Lorenz-63,
-Lorenz-96, and SST use local numerical artifacts when available and otherwise
-display the committed reference figures. Their detailed numerical summaries
-are documented here and require the ignored local artifacts to recompute.
-Full training or metric recomputation remains an explicit command-line task.
