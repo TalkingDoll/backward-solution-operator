@@ -42,6 +42,29 @@ documented in [experimental_detail.md](experimental_detail.md).
 | [nb_sst.ipynb](nb_sst.ipynb) | Global SST forecasting and rollout stability |
 | [nb_eeg.ipynb](nb_eeg.ipynb) | Resting-state EEG forecasting |
 
+## Comparison and increasing-data experiments
+
+These experiments reuse the canonical BNO (`edmd_bso_method.run_bso_pipeline`)
+and add only thin drivers. The BNO forms its `M`-dimensional Galerkin matrix
+from the frozen operator acting on the dictionary over a data-independent
+measure, so it is defined even when the number of observed training pairs
+`N < M`; a plain data EDMD (fit from the `N` observed pairs) is not.
+
+| Command | Experiment |
+|---|---|
+| `python -m experiments.enso.exp_enso` | ENSO prediction vs. LIM and climatology (monthly ERSSTv5) |
+| `python -m experiments.lorenz96.exp_lorenz96_data_length` | Lorenz-96 one-step skill vs. training pairs (M=40) |
+| `python -m experiments.enso.exp_enso_data_length` | ENSO one-step skill vs. training months (M=40 EOFs) |
+| `python -m experiments.eeg.exp_eeg_data_length` | EEG one-step skill vs. training pairs (M∈{20,64}) |
+
+Every driver accepts `--quick` for a short CPU-friendly smoke run. Each
+increasing-data driver writes two figures per system to `figures/<name>/`:
+`*_one_step_vs_pairs.pdf` (FNO, BNO, Data EDMD at the target `M`) and
+`*_one_step_vs_pairs_npairs.pdf` (the same plus a learned Data EDMD at
+`M = n_pairs`). The ENSO experiments read `../sst.mnmean.nc`; the EEG experiment
+needs `mne` and downloads subject S029 run R02 on first use if it is not already
+under `data/physionet.org/`.
+
 ## Reproducibility
 
 All six notebooks execute from a clean checkout. The Ornstein–Uhlenbeck and
