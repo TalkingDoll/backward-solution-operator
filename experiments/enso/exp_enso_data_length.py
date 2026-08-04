@@ -61,19 +61,19 @@ def main() -> None:
     seeds = QUICK_SEEDS if args.quick else SEEDS
     horizon = QUICK_HORIZON if args.quick else HORIZON
     data = load_ersstv5(DATA_PATH)
-    eof = fit_eofs(data, data.dev_end, TARGET_M)
+    eof = fit_eofs(data, data.train_end, TARGET_M)
     fixed_columns = eof.fixed_columns()
 
     # Held-out (n_origins, horizon+1, p) trajectories over the primary window.
-    last = data.primary_end - horizon - 1
-    origins = np.unique(np.linspace(data.dev_end, last, N_TEST_ORIGINS,
+    last = data.test_end - horizon - 1
+    origins = np.unique(np.linspace(data.train_end, last, N_TEST_ORIGINS,
                                     dtype=int))
     test_traj = np.stack([data.anomalies[origins + s]
                           for s in range(horizon + 1)], axis=1)
 
     def make_dataset_n(n_pairs: int, seed: int) -> dict:
-        start = data.dev_end - 2 - int(n_pairs)
-        return build_grid_dataset(data, max(start, 0), data.dev_end - 2)
+        start = data.train_end - 2 - int(n_pairs)
+        return build_grid_dataset(data, max(start, 0), data.train_end - 2)
 
     def cfg_builder(n_pairs: int, seed: int) -> dict:
         return dict(

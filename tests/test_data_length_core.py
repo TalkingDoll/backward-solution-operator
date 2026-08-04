@@ -1,7 +1,9 @@
+import pytest
 import numpy as np
 
 from experiments._data_length import (_coordinates, _one_step, _valid_time,
-                                       dictionary_rollout, fit_projected_edmd)
+                                       dictionary_rollout, fit_projected_edmd,
+                                       gram_diagnostics)
 
 
 def _orthonormal_setup(M):
@@ -77,6 +79,47 @@ def test_dictionary_rollout_reproduces_an_exact_linear_trajectory():
     truth = np.stack(truth)                        # (H, n, M)
     pred = dictionary_rollout(psi, K, w, u0, H)
     np.testing.assert_allclose(pred, truth, atol=1e-8)
+
+
+def test_pinv_solver_recovers_a_full_rank_system_exactly():
+    """With n_s >= m and no ridge, the min-norm fit is the exact transition."""
+    rng = np.random.default_rng(10)
+    M, N = 5, 200
+    psi, w = _orthonormal_setup(M)
+    K = rng.normal(size=(M, M))
+    K[:, 0] = 0.0
+    K[0, 0] = 1.0
+    c0 = rng.normal(size=(M, N))
+    u0 = (psi.T @ c0).T
+    uT = (psi.T @ (K.T @ c0)).T
+    fit = fit_projected_edmd(psi, w, u0, uT, dim=M, reg_alpha=0.0,
+                             solver="pinv")
+    np.testing.assert_allclose(fit, K, atol=1e-8)
+
+
+def test_forced_fit_below_m_is_rank_deficient_but_still_returns_a_matrix():
+    """The N<M regime the forced curves probe: rank(G) <= n_s, not m."""
+    rng = np.random.default_rng(11)
+    M, N = 8, 3                                   # far fewer pairs than columns
+    psi, w = _orthonormal_setup(M)
+    u0 = rng.normal(size=(N, M))
+    uT = rng.normal(size=(N, M))
+    rank, cond = gram_diagnostics(psi, w, u0, dim=M)
+    assert rank <= N < M                          # measurably rank deficient
+    assert not np.isfinite(cond) or cond > 1e12   # singular Gram
+    for solver in ("ridge", "pinv"):
+        fit = fit_projected_edmd(psi, w, u0, uT, dim=M, reg_alpha=1e-4,
+                                 solver=solver)
+        assert fit.shape == (M, M)                # defined, just not determined
+        assert np.isfinite(fit).all()
+        np.testing.assert_allclose(fit[:, 0], np.eye(M)[:, 0])
+
+
+def test_unknown_solver_is_rejected():
+    psi, w = _orthonormal_setup(4)
+    x = np.random.default_rng(12).normal(size=(10, 4))
+    with pytest.raises(ValueError, match="solver"):
+        fit_projected_edmd(psi, w, x, x, dim=4, reg_alpha=1e-6, solver="lstsq")
 
 
 def test_valid_time_is_the_first_lead_exceeding_the_threshold():

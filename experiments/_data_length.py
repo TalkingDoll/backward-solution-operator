@@ -51,7 +51,12 @@ METHOD_STYLE = {
     "bno": ("#d62728", "BSO"),
     "data_edmd": ("#2ca02c", "Data EDMD (M={M})"),
     "data_edmd_npairs": ("#9467bd", "Data EDMD (M=min(N,p))"),
+    # forced full-dimensional fits, drawn only where N < M (see plot helpers)
+    "data_edmd_forced_ridge": ("#8c564b", "Data EDMD (M={M}, ridge)"),
+    "data_edmd_forced_pinv": ("#e377c2", "Data EDMD (M={M}, min-norm)"),
 }
+FORCED_METHODS = ("data_edmd_forced_ridge", "data_edmd_forced_pinv")
+LINESTYLE = {"data_edmd_forced_ridge": "--", "data_edmd_forced_pinv": ":"}
 VALID_TIME_THRESHOLD = 0.5
 
 
@@ -63,6 +68,8 @@ class DataLengthResult:
     valid_time: dict[str, np.ndarray]   # method -> (n_seed, n_length) horizon
     target_M: int
     step_time: float                    # physical time per forecast step (T)
+    gram_rank: np.ndarray | None = None   # (n_seed, n_length) rank of G at M
+    gram_cond: np.ndarray | None = None   # (n_seed, n_length) cond(G) at M
 
 
 # ---------------------------------------------------------------------------
@@ -75,21 +82,51 @@ def _coordinates(psi: np.ndarray, weights: np.ndarray,
     return psi @ (weights[:, None] * np.asarray(fields, dtype=np.float64).T)
 
 
+def gram_diagnostics(psi: np.ndarray, weights: np.ndarray, u0: np.ndarray,
+                     dim: int) -> tuple[int, float]:
+    """Numerical rank and condition number of the empirical Gram matrix.
+
+    These are what make "rank deficient" a measured statement rather than an
+    assertion: with ``n_s`` observed transitions the Gram of ``dim`` dictionary
+    coordinates has rank at most ``min(n_s, dim)``.
+    """
+    c0 = _coordinates(psi[:dim], weights, u0)
+    gram = c0 @ c0.T
+    return int(np.linalg.matrix_rank(gram)), float(np.linalg.cond(gram))
+
+
 def fit_projected_edmd(psi: np.ndarray, weights: np.ndarray, u0: np.ndarray,
-                       uT: np.ndarray, dim: int,
-                       reg_alpha: float) -> np.ndarray:
+                       uT: np.ndarray, dim: int, reg_alpha: float,
+                       solver: str = "ridge") -> np.ndarray:
     """Least-squares EDMD in the leading ``dim`` dictionary coordinates.
 
     Uses the same weighted-Galerkin algebra as ``_final_spectral_analysis``
     (``K = (G + aI)^{-1} A``) but with the *observed* pairs instead of the
     operator image, so ``U Psi ~= K^T Psi`` on the data.
+
+    ``solver`` selects how the normal equations are resolved:
+
+    ``"ridge"``
+        the default, ``(G + lam I)^{-1} A`` with ``lam`` scaled by
+        ``trace(G)/dim``. Always well posed, so it returns a matrix even when
+        ``G`` is rank deficient -- the regularizer, not the data, supplies the
+        missing directions.
+    ``"pinv"``
+        the minimum-norm solution ``pinv(G) A`` with no regularization. When
+        ``n_s < dim`` the Gram is singular and this is the honest
+        rank-deficient least-squares answer.
     """
+    if solver not in ("ridge", "pinv"):
+        raise ValueError(f"solver must be 'ridge' or 'pinv', got {solver!r}")
     c0 = _coordinates(psi[:dim], weights, u0)     # (dim, N)
     c1 = _coordinates(psi[:dim], weights, uT)
     gram = c0 @ c0.T
     cross = c0 @ c1.T
-    reg = float(reg_alpha) * np.trace(gram) / max(gram.shape[0], 1)
-    transition = np.linalg.solve(gram + reg * np.eye(gram.shape[0]), cross)
+    if solver == "pinv":
+        transition = np.linalg.pinv(gram) @ cross
+    else:
+        reg = float(reg_alpha) * np.trace(gram) / max(gram.shape[0], 1)
+        transition = np.linalg.solve(gram + reg * np.eye(gram.shape[0]), cross)
     transition[:, 0] = 0.0                         # pin the constant mode
     transition[0, 0] = 1.0
     return transition
@@ -202,10 +239,12 @@ def run_sweep(
     truth = np.moveaxis(test_traj[:, 1:], 0, 1)            # (H, n, p)
     horizon = truth.shape[0]
     weights = np.asarray(weights, dtype=np.float64)
-    methods = ("fno", "bno", "data_edmd", "data_edmd_npairs")
+    methods = ("fno", "bno", "data_edmd", "data_edmd_npairs", *FORCED_METHODS)
     nan = lambda: {m: np.full((len(seeds), len(lengths)), np.nan)
                    for m in methods}
     one_step, valid_time = nan(), nan()
+    gram_rank = np.full((len(seeds), len(lengths)), np.nan)
+    gram_cond = np.full((len(seeds), len(lengths)), np.nan)
     step_time = 1.0
 
     for si, seed in enumerate(seeds):
@@ -236,6 +275,17 @@ def run_sweep(
                     psi, weights, u0_flat, uT_flat, target_M, reg_alpha)
                 rollouts["data_edmd"] = dictionary_rollout(
                     psi, k_data, weights, test_u0, horizon)
+            # Forced full-dimensional fits: no feasibility gate, so they also
+            # cover N < M where the Gram is rank deficient. Recording the rank
+            # makes that deficiency measured rather than asserted.
+            gram_rank[si, li], gram_cond[si, li] = gram_diagnostics(
+                psi, weights, u0_flat, target_M)
+            for method, solver in zip(FORCED_METHODS, ("ridge", "pinv")):
+                k_forced = fit_projected_edmd(
+                    psi, weights, u0_flat, uT_flat, target_M, reg_alpha,
+                    solver=solver)
+                rollouts[method] = dictionary_rollout(
+                    psi, k_forced, weights, test_u0, horizon)
             dim_np = int(min(n_pairs, target_M))
             if dim_np >= 2:
                 k_np = fit_projected_edmd(
@@ -249,36 +299,65 @@ def run_sweep(
                 one_step[method][si, li] = os_val
                 valid_time[method][si, li] = vt_val
             print(f"[{system}:data-length] N={length} seed={seed} "
-                  f"pairs={n_pairs} M={target_M}: "
+                  f"pairs={n_pairs} M={target_M} "
+                  f"rank(G)={int(gram_rank[si, li])}: "
                   f"one-step fno={one_step['fno'][si, li]:.4f} "
                   f"bso={one_step['bno'][si, li]:.4f} "
-                  f"data@min(N,p)={one_step['data_edmd_npairs'][si, li]:.4f} | "
+                  f"data@min(N,p)={one_step['data_edmd_npairs'][si, li]:.4f} "
+                  f"forced[ridge]="
+                  f"{one_step['data_edmd_forced_ridge'][si, li]:.4f} "
+                  f"forced[pinv]="
+                  f"{one_step['data_edmd_forced_pinv'][si, li]:.4f} | "
                   f"valid-time bso={valid_time['bno'][si, li]:.3g} "
                   f"fno={valid_time['fno'][si, li]:.3g}", flush=True)
 
     return DataLengthResult(np.asarray(lengths), np.asarray(seeds), one_step,
-                            valid_time, int(target_M), step_time)
+                            valid_time, int(target_M), step_time,
+                            gram_rank=gram_rank, gram_cond=gram_cond)
 
 
 # ---------------------------------------------------------------------------
 # Figures and persistence
 # ---------------------------------------------------------------------------
 
-def _curve(ax, lengths, per_seed, method, target_M):
+def _curve(ax, lengths, per_seed, method, target_M, mask=None):
+    """Median (+IQR) curve for one method; ``mask`` restricts the N range."""
     color, label = METHOD_STYLE[method]
     label = label.format(M=target_M)
+    lengths = np.asarray(lengths)
+    values = np.asarray(per_seed, dtype=np.float64)
+    if mask is not None:
+        lengths, values = lengths[mask], values[:, mask]
+        if not len(lengths):
+            return
     with np.errstate(all="ignore"), warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
-        median = np.nanmedian(per_seed, axis=0)
+        median = np.nanmedian(values, axis=0)
         if np.all(np.isnan(median)):
             return
-        ax.plot(lengths, median, color=color, marker="o", lw=2, label=label)
-        if per_seed.shape[0] > 1:
-            finite = np.sum(np.isfinite(per_seed), axis=0) > 1
+        ax.plot(lengths, median, color=color, marker="o", lw=2, label=label,
+                ls=LINESTYLE.get(method, "-"))
+        if values.shape[0] > 1:
+            finite = np.sum(np.isfinite(values), axis=0) > 1
             if finite.any():
-                lo, hi = np.nanpercentile(per_seed, [25, 75], axis=0)
+                lo, hi = np.nanpercentile(values, [25, 75], axis=0)
                 ax.fill_between(lengths, lo, hi, color=color, alpha=0.15,
                                 where=finite)
+
+
+def _forced_curves(ax, result: DataLengthResult) -> None:
+    """Draw the forced full-dimensional EDMD fits, only where ``N < M``.
+
+    Above ``M`` the ridge-forced fit is the *same* computation as
+    ``data_edmd``, so plotting it there would hide one curve beneath another;
+    below ``M`` is the rank-deficient regime these curves exist to expose.
+    """
+    mask = np.asarray(result.lengths) < result.target_M
+    if not mask.any():
+        return
+    for method in FORCED_METHODS:
+        _curve(ax, result.lengths, result.one_step[method], method,
+               result.target_M, mask=mask)
 
 
 def _mark_M(ax, target_M):
@@ -303,13 +382,14 @@ def plot_two_versions(result: DataLengthResult, figure_dir: Path, system: str,
         for method in methods:
             _curve(ax, result.lengths, result.one_step[method], method,
                    result.target_M)
+        _forced_curves(ax, result)
         _mark_M(ax, result.target_M)
         ax.set(xscale="log", xlabel="Number of training pairs N",
                ylabel="One-step generalization (relative $L^2$)",
                title=f"{system}: one-step vs. training pairs{suffix}\n"
                      f"({version})")
         ax.grid(alpha=0.2)
-        ax.legend(frameon=False, fontsize=9)
+        ax.legend(frameon=False, fontsize=8)
         fig.tight_layout()
         pdf, _ = save_figure_pair(
             fig, figure_dir / f"{slug}_one_step_vs_pairs{tag}.pdf")
@@ -328,12 +408,17 @@ def plot_valid_time(result: DataLengthResult, figure_dir: Path, system: str,
     for method in ("fno", "bno", "data_edmd_npairs"):
         _curve(ax, result.lengths, result.valid_time[method], method,
                result.target_M)
+    mask = np.asarray(result.lengths) < result.target_M
+    if mask.any():
+        for method in FORCED_METHODS:
+            _curve(ax, result.lengths, result.valid_time[method], method,
+                   result.target_M, mask=mask)
     _mark_M(ax, result.target_M)
     ax.set(xscale="log", xlabel="Number of training pairs N",
            ylabel=f"Valid-prediction-time (rel. $L^2$ < {VALID_TIME_THRESHOLD})",
            title=f"{system}: valid-prediction-time vs. training pairs{suffix}")
     ax.grid(alpha=0.2)
-    ax.legend(frameon=False, fontsize=9)
+    ax.legend(frameon=False, fontsize=8)
     fig.tight_layout()
     pdf, _ = save_figure_pair(fig, figure_dir / f"{slug}_valid_time_vs_pairs.pdf")
     plt.close(fig)
@@ -344,5 +429,8 @@ def save_result(result: DataLengthResult, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     arrays = {f"one_step_{m}": v for m, v in result.one_step.items()}
     arrays.update({f"valid_time_{m}": v for m, v in result.valid_time.items()})
+    if result.gram_rank is not None:
+        arrays["gram_rank"] = result.gram_rank
+        arrays["gram_cond"] = result.gram_cond
     np.savez(path, lengths=result.lengths, seeds=result.seeds,
              target_M=result.target_M, step_time=result.step_time, **arrays)

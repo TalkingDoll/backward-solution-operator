@@ -119,12 +119,12 @@ def _model_kwargs(quick):
 
 def run(quick: bool) -> dict:
     data = load_ersstv5(DATA_PATH)
-    eof = fit_eofs(data, data.dev_end, TARGET_M)
+    eof = fit_eofs(data, data.train_end, TARGET_M)
     patterns = eof.patterns
     horizon = 4 if quick else HORIZON
 
     # BNO: FNO + fixed EOF dictionary, trained on the development record.
-    dataset = build_grid_dataset(data, 12, data.dev_end - 2)
+    dataset = build_grid_dataset(data, 12, data.train_end - 2)
     cfg = dict(seed=2026, operator="fno", model_kwargs=_model_kwargs(quick),
                train_kwargs=dict(epochs=30 if quick else 400, lr=6e-4, bs=16,
                                  weight_decay=7.5e-5, sg_weight=0.25,
@@ -138,11 +138,11 @@ def run(quick: bool) -> dict:
 
     # LIM on the development EOF coefficients.
     coeff_dev = encode(patterns[:LIM_MODES], data.weights,
-                       data.anomalies[:data.dev_end])
+                       data.anomalies[:data.train_end])
     G = fit_lim(coeff_dev)
 
     # Primary verification origins.
-    lo, hi = data.dev_end, data.primary_end - horizon
+    lo, hi = data.train_end, data.test_end - horizon
     origins = np.arange(lo, hi)
     fields0 = data.anomalies[origins]
     truth = np.stack([data.anomalies[origins + lead]

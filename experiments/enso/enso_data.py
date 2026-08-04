@@ -24,10 +24,28 @@ NINO_BOUNDS = {
     "nino3": (-5.0, 5.0, 210.0, 270.0),
     "nino4": (-5.0, 5.0, 160.0, 210.0),
 }
-BASE_YEARS = (1981, 2010)
-DEV_END_DATE = "1998-01-01"
-VAL_START_DATE = "1978-01-01"
-PRIMARY_END_DATE = "2018-01-01"
+# Chronological split. Everything fitted uses months strictly before
+# TRAIN_END_DATE; forecasts are launched from TRAIN_END_DATE up to
+# TEST_END_DATE minus the forecast horizon. With a 12-month horizon the last
+# launch is 2023-12 and its last verified target is 2024-12, so the test period
+# ends on a full calendar year.
+TRAIN_END_DATE = "2008-01-01"
+TEST_END_DATE = "2025-01-01"
+
+# The anomaly climatology is the BASE_PERIOD_YEARS calendar years ending at the
+# training cutoff, so it is training-only by construction rather than a
+# hardcoded window that can silently straddle the split.
+BASE_PERIOD_YEARS = 30
+
+
+def base_period(train_end_date: str = TRAIN_END_DATE,
+                n_years: int = BASE_PERIOD_YEARS) -> tuple[int, int]:
+    """Inclusive (first, last) climatology years, guaranteed training-only."""
+    last = int(str(train_end_date)[:4]) - 1
+    first = last - int(n_years) + 1
+    if last >= int(str(train_end_date)[:4]):
+        raise AssertionError("climatology base period must end before training")
+    return first, last
 
 
 def _monthly_anomalies(raw, months, base_mask):
@@ -68,9 +86,9 @@ class ENSOData:
     basis_coords: np.ndarray     # (H*W, 2)
     nino_masks: dict             # name -> (H*W,) bool
     scale: float
-    dev_end: int
-    val_start: int
-    primary_end: int
+    train_end: int               # first month NOT used for fitting
+    test_end: int                # first month after the verification window
+    base_years: tuple[int, int]  # inclusive climatology base period
 
 
 def load_ersstv5(path: str | Path) -> ENSOData:
@@ -85,7 +103,8 @@ def load_ersstv5(path: str | Path) -> ENSOData:
     H, W = raw.shape[1], raw.shape[2]
     months = (times.astype("datetime64[M]").astype(int) % 12) + 1
     years = times.astype("datetime64[Y]").astype(int) + 1970
-    base = (years >= BASE_YEARS[0]) & (years <= BASE_YEARS[1])
+    base_years = base_period()
+    base = (years >= base_years[0]) & (years <= base_years[1])
 
     def _first(date):
         hits = np.where(times >= np.datetime64(date))[0]
@@ -93,17 +112,18 @@ def load_ersstv5(path: str | Path) -> ENSOData:
             raise ValueError(f"ERSSTv5 record does not reach {date}")
         return int(hits[0])
 
-    dev_end = _first(DEV_END_DATE)
-    val_start = _first(VAL_START_DATE)
-    primary_end = _first(PRIMARY_END_DATE)
+    train_end = _first(TRAIN_END_DATE)
+    test_end = _first(TEST_END_DATE)
+    if years[base][-1] >= years[train_end]:
+        raise AssertionError("climatology base period reaches into the test period")
     anomalies, _ = _monthly_anomalies(raw, months, base)
-    ocean_mask = np.all(np.isfinite(raw[:dev_end]), axis=0)          # (H, W)
+    ocean_mask = np.all(np.isfinite(raw[:train_end]), axis=0)        # (H, W)
     anomalies = np.where(ocean_mask[None], anomalies, 0.0)
     weights = np.cos(np.deg2rad(lat))[:, None] * ocean_mask
     weights = weights / weights.sum()
     flat_anom = anomalies.reshape(len(anomalies), -1)
     scale = float(np.sqrt(np.mean(
-        flat_anom[:dev_end] ** 2 @ weights.ravel())))
+        flat_anom[:train_end] ** 2 @ weights.ravel())))
     flat_anom = flat_anom / max(scale, 1e-8)
 
     gx, gy = np.meshgrid((lon - lon.min()) / (np.ptp(lon) + 1e-12),
@@ -113,11 +133,11 @@ def load_ersstv5(path: str | Path) -> ENSOData:
     nino_masks = {name: (_region_mask(lat, lon, b).ravel()
                          & (weights.ravel() > 0))
                   for name, b in NINO_BOUNDS.items()}
-    if not (0 < val_start < dev_end < primary_end < len(times)):
+    if not (0 < train_end < test_end <= len(times)):
         raise AssertionError("ENSO chronological split is malformed")
     return ENSOData(times, lat, lon, (H, W), flat_anom.astype(np.float64),
                     weights.ravel().astype(np.float64), fno_grid, basis_coords,
-                    nino_masks, scale, dev_end, val_start, primary_end)
+                    nino_masks, scale, train_end, test_end, base_years)
 
 
 def nino_index(data: ENSOData, fields_flat: np.ndarray, name="nino34"):
@@ -134,10 +154,13 @@ class EOFBasis:
     def fixed_columns(self) -> np.ndarray:
         """Dictionary columns (p, n_modes-1) for run_bso_pipeline fixed_basis.
 
-        The leading constant is added by ``build_basis``; supply the remaining
-        n_modes-1 EOF patterns as fixed dictionary functions.
+        ``build_basis`` prepends the constant function, so only ``n_modes-1``
+        EOF patterns fit inside a dictionary of size ``n_modes``. The dropped
+        pattern is the **last** (least energetic) one: the leading EOF carries
+        the bulk of the variance and is the ENSO mode itself, so it must stay in
+        the dictionary span.
         """
-        return self.patterns[1:].T.copy() if self.patterns.shape[0] > 1 \
+        return self.patterns[:-1].T.copy() if self.patterns.shape[0] > 1 \
             else self.patterns.T.copy()
 
 
