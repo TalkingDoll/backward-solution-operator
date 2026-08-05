@@ -113,7 +113,7 @@ Matplotlib's relative fractions.
 | `sst/sst_forecast_skill` | 2x2 | 7.0x5.25 | 0.55 / 0.10 / 0.48 / 0.90 | 0.62 / 0.62 | title 0.05 in from top; legend 0.34 in from top, 3 columns |
 | `sst/sst_rollout_stability` | 1x2 | 7.0x3.0 | 0.53 / 0.10 / 0.48 / 0.82 | 0.54 / 0 | title 0.05 in from top; legend 0.36 in from top, 3 columns |
 | `triple_well/tw_eigenvalues` | 1x1 | 3.4x3.4 | 0.55 / 0.12 / 0.47 / 0.28 | 0 / 0 | axis legend, 1 column |
-| `triple_well/tw_eigenfunctions` | 1x3 | 7.0x2.6 | 0.55 / 0.32 / 0.43 / 0.48 | 0.65 / 0 | title 0.05 in from top; colorbar size 4.5%, pad 0.04 in |
+| `triple_well/tw_eigenfunctions` | 1x3 | 7.0x2.2 | 0.55 / 0.32 / 0.43 / 0.48 | 0.65 / 0 | title 0.05 in from top; colorbar size 4.5%, pad 0.04 in |
 
 The older two-panel OU evaluation function uses 7.0x3.0 in, margins
 0.52 / 0.10 / 0.48 / 0.30 in, and a 0.55 in column gap.
