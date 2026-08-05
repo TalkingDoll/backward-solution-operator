@@ -77,6 +77,20 @@ DEFAULT_OUTPUT_DIR = (
 DEFAULT_FIGURE_PDF = (
     FIGURES_DIR / "eeg" / "eeg_rollout_comparison.pdf"
 )
+EEG_FIGURE = {
+    "figsize": (7.0, 3.0),
+    "nrows": 1,
+    "ncols": 1,
+    "left_in": 0.48,
+    "right_in": 0.10,
+    "bottom_in": 0.50,
+    "top_in": 0.80,
+    "column_gap_in": 0.0,
+    "row_gap_in": 0.0,
+    "suptitle_top_in": 0.05,
+    "legend_top_in": 0.38,
+    "legend_ncol": 5,
+}
 
 
 def locked_hyperparameters() -> dict[str, dict[str, Any]]:
@@ -465,7 +479,14 @@ def _plot_metric_reproduction(
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    from plotting_utils import DEFAULT_LAYOUT, apply_layout, save_figure_pair
+    from plotting_utils import (
+        PUBLICATION_STYLE,
+        apply_physical_layout,
+        apply_publication_rcparams,
+        save_figure_pair,
+        style_axis,
+        y_from_top,
+    )
 
     colors = {
         "FNO-BSO": "#D1495B",
@@ -488,18 +509,21 @@ def _plot_metric_reproduction(
         "EDMD-DL": "EDMD-DL",
         "Kernel EDMD": "Kernel EDMD",
     }
+    apply_publication_rcparams()
+    style = PUBLICATION_STYLE
     steps = np.arange(1, ROLLOUT_STEPS + 1, dtype=int)
-    # Use the common manuscript layout, with a compact single-panel size.
-    # The reduced bottom margin and larger label pad deliberately place the
-    # x-axis label lower without leaving an oversized blank lower margin.
-    layout = dict(
-        DEFAULT_LAYOUT,
-        left=0.065,
-        right=0.985,
-        bottom=0.18,
-        top=0.78,
+    figure, axis = plt.subplots(
+        1,
+        1,
+        figsize=EEG_FIGURE["figsize"],
+        dpi=style["dpi"],
+        squeeze=True,
+        sharex=False,
+        sharey=False,
+        layout=None,
+        facecolor=style["figure_face_color"],
     )
-    figure, axis = plt.subplots(figsize=(11.0, 4.8))
+    figure.set_layout_engine(None)
     for method in METHODS:
         values = np.asarray(
             result["methods"][method][metric_key],
@@ -513,11 +537,18 @@ def _plot_metric_reproduction(
             steps,
             values,
             color=colors[method],
+            linestyle="-",
             marker=markers[method],
             markevery=np.arange(4, ROLLOUT_STEPS, 5, dtype=int),
-            markersize=5.0,
-            linewidth=3.0 if method == "FNO-BSO" else 2.2,
+            markersize=style["marker_size"],
+            markeredgewidth=style["marker_edge_width"],
+            linewidth=(
+                style["highlight_line_width"]
+                if method == "FNO-BSO"
+                else style["line_width"]
+            ),
             label=display_labels[method],
+            alpha=1.0,
             zorder=3 if method == "FNO-BSO" else 2,
         )
 
@@ -529,29 +560,41 @@ def _plot_metric_reproduction(
     axis.set_xticks(steps, minor=True)
     axis.set_xlabel(
         f"Rollout step ({STEP_SECONDS:g} s per step)",
-        fontsize=16,
-        labelpad=14,
+        fontsize=style["axis_label_size"],
+        fontweight=style["font_weight"],
+        labelpad=style["axis_label_pad"],
+        color=style["text_color"],
     )
-    axis.tick_params(axis="both", labelsize=14)
-    axis.grid(axis="y", alpha=0.22)
-    axis.spines[["top", "right"]].set_visible(False)
+    style_axis(axis, grid_axis="y", grid_visible=True, minor_ticks=True)
     axis.legend(
-        frameon=False,
-        ncol=5,
-        loc="lower center",
-        bbox_to_anchor=(0.5, 1.01),
-        borderaxespad=0.0,
-        columnspacing=1.35,
-        handletextpad=0.45,
-        fontsize=14,
+        frameon=style["legend_frameon"],
+        fancybox=style["legend_fancybox"],
+        framealpha=style["legend_framealpha"],
+        ncol=EEG_FIGURE["legend_ncol"],
+        loc="upper center",
+        bbox_to_anchor=(0.5, y_from_top(figure, EEG_FIGURE["legend_top_in"])),
+        bbox_transform=figure.transFigure,
+        borderaxespad=style["legend_borderaxespad"],
+        borderpad=style["legend_borderpad"],
+        labelspacing=style["legend_labelspacing"],
+        columnspacing=style["legend_columnspacing"],
+        handlelength=style["legend_handlelength"],
+        handleheight=style["legend_handleheight"],
+        handletextpad=style["legend_handletextpad"],
+        fontsize=style["legend_size"],
     )
     figure.suptitle(
         title,
-        fontsize=20,
-        y=layout["suptitle_y"],
+        fontsize=style["suptitle_size"],
+        fontweight=style["title_weight"],
+        color=style["text_color"],
+        x=0.5,
+        y=y_from_top(figure, EEG_FIGURE["suptitle_top_in"]),
+        horizontalalignment="center",
+        verticalalignment="top",
     )
-    apply_layout(figure, layout)
-    pdf, png = save_figure_pair(figure, pdf_path, dpi=260)
+    apply_physical_layout(figure, EEG_FIGURE)
+    pdf, png = save_figure_pair(figure, pdf_path, dpi=style["dpi"])
     plt.close(figure)
     return pdf, png
 
