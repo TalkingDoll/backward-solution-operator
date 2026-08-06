@@ -53,6 +53,7 @@ measure, so it is defined even when the number of observed training pairs
 | Command | Experiment |
 |---|---|
 | `python -m experiments.enso.exp_enso` | ENSO prediction vs. LIM and climatology (monthly ERSSTv5) |
+| `python -m experiments.enso.exp_enso_delay` | ENSO prediction on a 12-month delay embedding, with LIM reported both instantaneous and memory-matched |
 | `python -m experiments.lorenz96.exp_lorenz96_data_length` | Lorenz-96 one-step skill vs. training pairs (M=40) |
 | `python -m experiments.lorenz96.exp_lorenz96_data_length_matched` | Lorenz-96 multi-step skill vs. training pairs, matched to `l96_prediction` (K=20, polynomial BSO, M=30) |
 | `python -m experiments.enso.exp_enso_data_length` | ENSO one-step skill vs. training months (M=40 EOFs) |

@@ -1,0 +1,39 @@
+/home/clairev/miniconda3/lib/python3.13/site-packages/torch/nn/modules/linear.py:124: UserWarning: Initializing zero-element tensors is a no-op
+  init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+/home/clairev/Research/FNO-koopman/neural_koopman/edmd_bso_method.py:876: UserWarning: Converting a tensor with requires_grad=True to a scalar may lead to unexpected behavior.
+Consider using tensor.detach() first. (Triggered internally at /pytorch/torch/csrc/autograd/generated/python_variable_methods.cpp:838.)
+  last = dict(epoch=ep, inv=float(inv_loss), data=float(data_loss),
+[pipeline] phase A: loaded operator checkpoint /home/clairev/Research/FNO-koopman/neural_koopman/results/enso/fno.pt (val rel-L2 = 1.1339e-01)
+[pipeline] phase B: joint training with solver 'edmd' (solver_edmd.py) ...
+[pipeline] phase B done in 0.7s
+[pipeline] system=enso  solver=edmd  n_basis=40
+[pipeline] operator val rel-L2 = 1.1339e-01
+[pipeline] r_eff = 40/40  cond(G) = 1.000e+00
+[pipeline] top generator eigenvalues (log mu / T):
+[pipeline]   +0.000000 +0.000000j
+[pipeline]   -0.189167 +0.152169j
+[pipeline]   -0.189167 -0.152169j
+[pipeline]   -0.192031 +0.085191j
+[pipeline]   -0.192031 -0.085191j
+[pipeline]   -0.309759 +0.446407j
+[pipeline]   -0.309759 -0.446407j
+[pipeline]   -0.330284 +0.000000j
+[enso-direct] loaded checkpoint /home/clairev/Research/FNO-koopman/neural_koopman/results/enso/direct.pt
+
+[enso] operator val rel-L2 = 0.1134
+[enso] damped-persistence gamma = 0.890 (training-period selection)
+[enso] one-month field relative L2 (isolates the operator):
+  fno_map      0.6711
+  lim          0.5060
+  persistence  0.4600
+[enso] transient growth ||A^n|| at n=1,H: BSO 1.309,2.276  LIM 1.110,1.390
+[enso] Niño-3.4 anomaly correlation by method (lead 1..H):
+  bno                  valid_time= 1  ACC: +0.96 +0.89 +0.80 +0.71 +0.60 +0.47 +0.36 +0.25 +0.15 +0.08 +0.03 -0.02
+  lim                  valid_time= 1  ACC: +0.97 +0.92 +0.86 +0.79 +0.70 +0.59 +0.47 +0.37 +0.26 +0.17 +0.09 +0.03
+  lim_wang             valid_time= 1  ACC: +0.97 +0.93 +0.87 +0.80 +0.71 +0.60 +0.49 +0.38 +0.28 +0.18 +0.11 +0.03
+  climatology          valid_time= 0  ACC: +nan +nan +nan +nan +nan +nan +nan +nan +nan +nan +nan +nan
+  persistence          valid_time= 1  ACC: +0.96 +0.87 +0.76 +0.64 +0.50 +0.37 +0.25 +0.14 +0.06 +0.00 -0.03 -0.05
+  damped_persistence   valid_time= 1  ACC: +0.96 +0.87 +0.76 +0.64 +0.50 +0.37 +0.25 +0.14 +0.06 +0.00 -0.03 -0.05
+  lim_direct           valid_time=-1  ACC: +0.97 +0.93 +0.88 +0.81 +0.73 +0.64 +0.54 +0.45 +0.34 +0.26 +0.16 +0.06
+  direct_fno           valid_time=-1  ACC: +0.96 +0.92 +0.84 +0.79 +0.68 +0.63 +0.52 +0.45 +0.38 +0.34 +0.29 +0.23
+[enso] figure: /home/clairev/Research/FNO-koopman/neural_koopman/figures/enso/enso_prediction_skill.pdf

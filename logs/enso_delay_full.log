@@ -1,0 +1,38 @@
+[pipeline] phase A: loaded operator checkpoint /home/clairev/Research/FNO-koopman/neural_koopman/results/enso_delay/fno.pt (val rel-L2 = 2.5374e-01)
+/home/clairev/miniconda3/lib/python3.13/site-packages/torch/nn/modules/linear.py:124: UserWarning: Initializing zero-element tensors is a no-op
+  init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+[pipeline] phase B: joint training with solver 'edmd' (solver_edmd.py) ...
+/home/clairev/Research/FNO-koopman/neural_koopman/edmd_bso_method.py:876: UserWarning: Converting a tensor with requires_grad=True to a scalar may lead to unexpected behavior.
+Consider using tensor.detach() first. (Triggered internally at /pytorch/torch/csrc/autograd/generated/python_variable_methods.cpp:838.)
+  last = dict(epoch=ep, inv=float(inv_loss), data=float(data_loss),
+[pipeline] phase B done in 0.7s
+[pipeline] spectral stabilization: clipped 8/40 eigenvalues to |mu| <= 0.999
+[pipeline] system=enso_delay  solver=edmd  n_basis=40
+[pipeline] operator val rel-L2 = 2.5374e-01
+[pipeline] r_eff = 40/40  cond(G) = 1.000e+00
+[pipeline] top generator eigenvalues (log mu / T):
+[pipeline]   +0.000000 +0.000000j
+[pipeline]   -0.001001 +0.053545j
+[pipeline]   -0.001001 -0.053545j
+[pipeline]   -0.001001 -0.174197j
+[pipeline]   -0.001001 +0.174197j
+[pipeline]   -0.001001 -0.097215j
+[pipeline]   -0.001001 +0.097215j
+[pipeline]   -0.001001 -0.035683j
+[enso-direct] saved checkpoint /home/clairev/Research/FNO-koopman/neural_koopman/results/enso_delay/direct.pt
+
+[enso-delay] operator val rel-L2 = 0.2537
+[enso-delay] damped-persistence gamma = 0.890
+[enso-delay] one-month field relative L2: delay FNO map 0.5217  persistence 0.4600
+[enso-delay] transient growth ||K^n|| at n=1,H: 1.318,5.519
+[enso-delay] Niño-3.4 anomaly correlation by method (lead 1..H):
+  bno                  valid_time= 0  ACC: +0.94 +0.84 +0.67 +0.43 +0.13 -0.12 -0.27 -0.33 -0.33 -0.30 -0.26 -0.20
+  lim_delay            valid_time= 1  ACC: +0.98 +0.93 +0.89 +0.83 +0.75 +0.64 +0.52 +0.40 +0.27 +0.17 +0.09 +0.00
+  lim                  valid_time= 1  ACC: +0.97 +0.92 +0.86 +0.79 +0.70 +0.59 +0.47 +0.37 +0.26 +0.17 +0.09 +0.03
+  lim_wang             valid_time= 1  ACC: +0.97 +0.93 +0.87 +0.80 +0.71 +0.60 +0.49 +0.38 +0.28 +0.18 +0.11 +0.03
+  climatology          valid_time= 0  ACC: +nan +nan +nan +nan +nan +nan +nan +nan +nan +nan +nan +nan
+  persistence          valid_time= 1  ACC: +0.96 +0.87 +0.76 +0.64 +0.50 +0.37 +0.25 +0.14 +0.06 +0.00 -0.03 -0.05
+  damped_persistence   valid_time= 1  ACC: +0.96 +0.87 +0.76 +0.64 +0.50 +0.37 +0.25 +0.14 +0.06 +0.00 -0.03 -0.05
+  lim_direct           valid_time=-1  ACC: +0.98 +0.93 +0.89 +0.83 +0.74 +0.63 +0.50 +0.39 +0.27 +0.18 +0.09 +0.01
+  direct_fno           valid_time=-1  ACC: +0.94 +0.89 +0.83 +0.80 +0.74 +0.68 +0.62 +0.60 +0.49 +0.38 +0.32 +0.27
+[enso-delay] figure: /home/clairev/Research/FNO-koopman/neural_koopman/figures/enso/enso_delay_prediction_skill.pdf
