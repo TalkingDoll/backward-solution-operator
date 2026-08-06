@@ -35,7 +35,14 @@ import torch
 
 from edmd_bso_method import apply_operator, build_operator, device
 from kbe_observation_data import generate_kbe_dataset
-from plotting_utils import DEFAULT_LAYOUT, apply_layout, save_figure_pair
+from plotting_utils import (
+    PUBLICATION_STYLE,
+    apply_physical_layout,
+    apply_publication_rcparams,
+    save_figure_pair,
+    style_axis,
+    y_from_top,
+)
 from project_paths import PROJECT_ROOT
 
 
@@ -54,17 +61,20 @@ STABILITY_RADIUS = 0.99
 SAMPLE_STRIDE = 1
 N_STEPS = 300
 N_ORIGINS = 64
-PREDICTION_FIGSIZE = (15.0, 4.3)
-PREDICTION_LAYOUT = dict(
-    DEFAULT_LAYOUT,
-    left=0.065,
-    right=0.985,
-    bottom=0.16,
-    top=0.72,
-    wspace=0.20,
-    suptitle_y=0.985,
-    legend_y=0.925,
-)
+PREDICTION_FIGURE = {
+    "figsize": (7.0, 3.0),
+    "nrows": 1,
+    "ncols": 3,
+    "left_in": 0.50,
+    "right_in": 0.10,
+    "bottom_in": 0.46,
+    "top_in": 0.86,
+    "column_gap_in": 0.30,
+    "row_gap_in": 0.0,
+    "suptitle_top_in": 0.05,
+    "legend_top_in": 0.35,
+    "legend_ncol": 2,
+}
 
 
 @dataclass
@@ -453,14 +463,51 @@ def plot_forecasts(
     """Create a legible short-, mid-, and long-range prediction figure."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    fig, axes = plt.subplots(1, 3, figsize=PREDICTION_FIGSIZE)
+    apply_publication_rcparams()
+    style = PUBLICATION_STYLE
+    fig, axes = plt.subplots(
+        1,
+        3,
+        figsize=PREDICTION_FIGURE["figsize"],
+        dpi=style["dpi"],
+        squeeze=True,
+        sharex=False,
+        sharey=False,
+        layout=None,
+        facecolor=style["figure_face_color"],
+    )
+    fig.set_layout_engine(None)
     panels = ((0.0, 0.3, "short term"), (0.3, 1.0, "mid term"), (1.0, 6.0, "long term"))
     for ax, (t_lo, t_hi, name) in zip(axes, panels):
         mask = (times >= t_lo - 1.0e-12) & (times <= t_hi + 1.0e-12)
         operator_y = np.maximum(operator_errors[mask], 1.0e-8)
         spectral_y = np.maximum(spectral_errors[mask], 1.0e-8)
-        ax.plot(times[mask], operator_y, "-o", ms=3.5, c="tab:blue", label="FNO")
-        ax.plot(times[mask], spectral_y, "-s", ms=3.5, c="tab:red", label="BSO")
+        ax.plot(
+            times[mask],
+            operator_y,
+            color="tab:blue",
+            linestyle="-",
+            linewidth=style["line_width"],
+            marker="o",
+            markersize=style["marker_size"],
+            markeredgewidth=style["marker_edge_width"],
+            label="FNO",
+            alpha=1.0,
+            zorder=2,
+        )
+        ax.plot(
+            times[mask],
+            spectral_y,
+            color="tab:red",
+            linestyle="-",
+            linewidth=style["line_width"],
+            marker="s",
+            markersize=style["marker_size"],
+            markeredgewidth=style["marker_edge_width"],
+            label="BSO",
+            alpha=1.0,
+            zorder=3,
+        )
 
         values = np.concatenate([operator_y, spectral_y])
         y_min, y_max = float(values.min()), float(values.max())
@@ -469,33 +516,58 @@ def plot_forecasts(
         y_hi = y_max + 0.10 * y_span
         ax.set_xlim(t_lo, t_hi)
         ax.set_ylim(y_lo, y_hi)
-        ax.set_xlabel(r"$t$", fontsize=20)
+        ax.set_xlabel(
+            r"$t$",
+            fontsize=style["axis_label_size"],
+            fontweight=style["font_weight"],
+            labelpad=style["axis_label_pad"],
+            color=style["text_color"],
+        )
         interval = (
             rf"$t \leq {t_hi:g}$"
             if t_lo == 0
             else rf"${t_lo:g} < t \leq {t_hi:g}$"
         )
-        ax.set_title(f"{name} ({interval})", fontsize=20)
-        ax.tick_params(labelsize=18)
-        ax.grid(alpha=0.3)
+        ax.set_title(
+            f"{name} ({interval})",
+            fontsize=style["panel_title_size"],
+            fontweight=style["title_weight"],
+            pad=style["panel_title_pad"],
+            color=style["text_color"],
+        )
+        style_axis(ax, grid_axis="both", grid_visible=True, minor_ticks=False)
 
     handles, labels = axes[0].get_legend_handles_labels()
     fig.legend(
         handles,
         labels,
         loc="upper center",
-        bbox_to_anchor=(0.5, PREDICTION_LAYOUT["legend_y"]),
-        ncol=2,
-        frameon=False,
-        fontsize=18,
+        bbox_to_anchor=(0.5, y_from_top(fig, PREDICTION_FIGURE["legend_top_in"])),
+        ncol=PREDICTION_FIGURE["legend_ncol"],
+        frameon=style["legend_frameon"],
+        fancybox=style["legend_fancybox"],
+        framealpha=style["legend_framealpha"],
+        borderaxespad=style["legend_borderaxespad"],
+        borderpad=style["legend_borderpad"],
+        labelspacing=style["legend_labelspacing"],
+        handlelength=style["legend_handlelength"],
+        handleheight=style["legend_handleheight"],
+        handletextpad=style["legend_handletextpad"],
+        columnspacing=style["legend_columnspacing"],
+        fontsize=style["legend_size"],
     )
     fig.suptitle(
         r"Lorenz-96 prediction (relative $L^2$ error)",
-        fontsize=22,
-        y=PREDICTION_LAYOUT["suptitle_y"],
+        fontsize=style["suptitle_size"],
+        fontweight=style["title_weight"],
+        color=style["text_color"],
+        x=0.5,
+        y=y_from_top(fig, PREDICTION_FIGURE["suptitle_top_in"]),
+        horizontalalignment="center",
+        verticalalignment="top",
     )
-    apply_layout(fig, PREDICTION_LAYOUT)
-    save_figure_pair(fig, path, dpi=PREDICTION_LAYOUT["dpi"])
+    apply_physical_layout(fig, PREDICTION_FIGURE)
+    save_figure_pair(fig, path, dpi=style["dpi"])
     plt.close(fig)
 
 
