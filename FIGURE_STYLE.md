@@ -109,7 +109,7 @@ Matplotlib's relative fractions.
 | `lorenz63/l63_prediction` | 1x3 | 7.0x3.0 | 0.50 / 0.10 / 0.46 / 0.86 | 0.30 / 0 | title 0.05 in from top; legend 0.35 in from top, 2 columns |
 | `lorenz96/l96_prediction` | 1x3 | 7.0x3.0 | 0.50 / 0.10 / 0.46 / 0.86 | 0.30 / 0 | title 0.05 in from top; legend 0.35 in from top, 2 columns |
 | `ou/*_eigenvalues` | 1x1 real-axis strip | 6.0x1.65 | 0.23 / 0.10 / 0.46 / 0.33 | 0 / 0 | in-axis legend, 2 columns; y axis hidden explicitly |
-| `ou/*_eigenfunctions` | 2x3 | 7.0x4.6 | 0.48 / 0.10 / 0.46 / 0.65 | 0.34 / 0.46 | title 0.05 in from top; legend 0.23 in from top, 2 columns; 8 pt regular DejaVu Sans with 0.10 pt text-stroke reinforcement |
+| `ou/*_eigenfunctions` | 2x3 | 7.0x4.6 | 0.48 / 0.10 / 0.46 / 0.65 | 0.34 / 0.46 | title 0.05 in from top; legend 0.23 in from top, 2 columns |
 | `sst/sst_forecast_skill` | 2x2 | 7.0x5.25 | 0.55 / 0.10 / 0.48 / 0.90 | 0.62 / 0.62 | title 0.05 in from top; legend 0.34 in from top, 3 columns |
 | `sst/sst_rollout_stability` | 1x2 | 7.0x3.0 | 0.53 / 0.10 / 0.48 / 0.82 | 0.54 / 0 | title 0.05 in from top; legend 0.36 in from top, 3 columns |
 | `triple_well/tw_eigenvalues` | 1x1 real-axis strip | 6.0x1.65 | 0.23 / 0.10 / 0.46 / 0.33 | 0 / 0 | in-axis legend, 2 columns; y axis hidden explicitly |
