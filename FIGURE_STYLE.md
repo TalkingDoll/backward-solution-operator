@@ -108,6 +108,7 @@ Matplotlib's relative fractions.
 | `eeg/eeg_rollout_comparison` | 1x1 | 7.0x3.0 | 0.48 / 0.10 / 0.50 / 0.80 | 0 / 0 | title 0.05 in from top; legend 0.38 in from top, 5 columns |
 | `lorenz63/l63_prediction` | 1x3 | 7.0x3.0 | 0.50 / 0.10 / 0.46 / 0.86 | 0.30 / 0 | title 0.05 in from top; legend 0.35 in from top, 2 columns |
 | `lorenz96/l96_prediction` | 1x3 | 7.0x3.0 | 0.50 / 0.10 / 0.46 / 0.86 | 0.30 / 0 | title 0.05 in from top; legend 0.35 in from top, 2 columns |
+| `lorenz96/lorenz_96_{one_step,valid_time}_vs_pairs*` | 1x1 | 3.4x3.4 | 0.66 / 0.12 / 1.22 / 0.28 | 0 / 0 | no figure title; 9 pt panel title; legend below the axes at (0.5, 0.005), 1 column x 5 rows |
 | `ou/*_eigenvalues` | 1x1 real-axis strip | 6.0x1.65 | 0.23 / 0.10 / 0.46 / 0.33 | 0 / 0 | in-axis legend, 2 columns; y axis hidden explicitly |
 | `ou/*_eigenfunctions` | 2x3 | 7.0x4.6 | 0.48 / 0.10 / 0.46 / 0.65 | 0.34 / 0.46 | title 0.05 in from top; legend 0.23 in from top, 2 columns |
 | `sst/sst_forecast_skill` | 2x2 | 7.0x5.25 | 0.55 / 0.10 / 0.48 / 0.90 | 0.62 / 0.62 | title 0.05 in from top; legend 0.34 in from top, 3 columns |

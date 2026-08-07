@@ -41,23 +41,58 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from matplotlib.ticker import ScalarFormatter
 
 from edmd_bso_method import apply_operator, device, run_bso_pipeline
-from plotting_utils import save_figure_pair
+from figure_style import (GRID_COLOR, LINEWIDTH, MARKER_EDGE_WIDTH, MARKER_SIZE,
+                          SINGLE_COLUMN_WIDTH, TEXT_COLOR, add_legend,
+                          make_figure, publication_style,
+                          save_publication_pair, style_axis)
 
 
+# Every property of every curve, stated once. BSO is the method under study, so
+# it is the only "main" (1.7 pt) line; everything else is a 1.4 pt data line.
 METHOD_STYLE = {
-    "fno": ("#1f77b4", "FNO"),
-    "bno": ("#d62728", "BSO"),
-    "data_edmd": ("#2ca02c", "Data EDMD (M={M})"),
-    "data_edmd_npairs": ("#9467bd", "Data EDMD (M=min(N,p))"),
+    "fno": dict(color="#1f77b4", label="FNO", linestyle="-",
+                linewidth=LINEWIDTH["data"], marker="o", zorder=3),
+    "bno": dict(color="#d62728", label="BSO", linestyle="-",
+                linewidth=LINEWIDTH["main"], marker="o", zorder=5),
+    "data_edmd": dict(color="#2ca02c", label="Data EDMD (M={M})",
+                      linestyle="-", linewidth=LINEWIDTH["data"], marker="o",
+                      zorder=4),
+    "data_edmd_npairs": dict(color="#9467bd",
+                             label="Data EDMD (M=min(N,p))", linestyle="-",
+                             linewidth=LINEWIDTH["data"], marker="o",
+                             zorder=4),
     # forced full-dimensional fits, drawn only where N < M (see plot helpers)
-    "data_edmd_forced_ridge": ("#8c564b", "Data EDMD (M={M}, ridge)"),
-    "data_edmd_forced_pinv": ("#e377c2", "Data EDMD (M={M}, min-norm)"),
+    "data_edmd_forced_ridge": dict(color="#8c564b",
+                                   label="Data EDMD (M={M}, ridge)",
+                                   linestyle="--",
+                                   linewidth=LINEWIDTH["data"], marker="o",
+                                   zorder=2),
+    "data_edmd_forced_pinv": dict(color="#e377c2",
+                                  label="Data EDMD (M={M}, min-norm)",
+                                  linestyle=":",
+                                  linewidth=LINEWIDTH["data"], marker="o",
+                                  zorder=2),
 }
 FORCED_METHODS = ("data_edmd_forced_ridge", "data_edmd_forced_pinv")
-LINESTYLE = {"data_edmd_forced_ridge": "--", "data_edmd_forced_pinv": ":"}
 VALID_TIME_THRESHOLD = 0.5
+
+# One 1x1 single-column layout shared by all three data-length figures, in
+# inches. The 1.22 in bottom holds the five-row legend (~0.76 in), the x tick
+# labels and the axis label, plus a ~0.12 in breathing gap between the axis
+# label and the first legend row; 0.66 in on the left holds a two-line rotated
+# y label. These margins are what to adjust if an element collides -- never the
+# font, line, marker, tick or legend sizes, which are physical constants of the
+# paper.
+LAYOUT_DATA_LENGTH = {
+    "figsize": (SINGLE_COLUMN_WIDTH, 3.4), "nrows": 1, "ncols": 1,
+    "left": 0.66, "right": 0.12, "bottom": 1.22, "top": 0.28,
+    "wgap": 0.0, "hgap": 0.0,
+    "legend_loc": "lower center", "legend_bbox": (0.5, 0.005),
+    "legend_ncol": 1,
+}
 
 
 @dataclass
@@ -320,10 +355,15 @@ def run_sweep(
 # Figures and persistence
 # ---------------------------------------------------------------------------
 
-def _curve(ax, lengths, per_seed, method, target_M, mask=None):
-    """Median (+IQR) curve for one method; ``mask`` restricts the N range."""
-    color, label = METHOD_STYLE[method]
-    label = label.format(M=target_M)
+def _curve(ax, lengths, per_seed, method, target_M, mask=None, *, bands=True):
+    """Median (+IQR) curve for one method; ``mask`` restricts the N range.
+
+    ``bands=False`` drops the 25-75 percentile shading and draws medians only,
+    for the variant of each figure that stays legible when several curves
+    overlap. The medians are computed identically either way.
+    """
+    style = METHOD_STYLE[method]
+    label = style["label"].format(M=target_M)
     lengths = np.asarray(lengths)
     values = np.asarray(per_seed, dtype=np.float64)
     if mask is not None:
@@ -335,17 +375,21 @@ def _curve(ax, lengths, per_seed, method, target_M, mask=None):
         median = np.nanmedian(values, axis=0)
         if np.all(np.isnan(median)):
             return
-        ax.plot(lengths, median, color=color, marker="o", lw=2, label=label,
-                ls=LINESTYLE.get(method, "-"))
-        if values.shape[0] > 1:
+        ax.plot(lengths, median, label=label, color=style["color"],
+                linestyle=style["linestyle"], linewidth=style["linewidth"],
+                marker=style["marker"], markersize=MARKER_SIZE,
+                markeredgewidth=MARKER_EDGE_WIDTH, alpha=1.0,
+                zorder=style["zorder"])
+        if bands and values.shape[0] > 1:
             finite = np.sum(np.isfinite(values), axis=0) > 1
             if finite.any():
                 lo, hi = np.nanpercentile(values, [25, 75], axis=0)
-                ax.fill_between(lengths, lo, hi, color=color, alpha=0.15,
-                                where=finite)
+                ax.fill_between(lengths, lo, hi, where=finite,
+                                color=style["color"], alpha=0.15,
+                                linewidth=0.0, zorder=style["zorder"] - 1)
 
 
-def _forced_curves(ax, result: DataLengthResult) -> None:
+def _forced_curves(ax, result: DataLengthResult, *, bands: bool = True) -> None:
     """Draw the forced full-dimensional EDMD fits, only where ``N < M``.
 
     Above ``M`` the ridge-forced fit is the *same* computation as
@@ -357,71 +401,109 @@ def _forced_curves(ax, result: DataLengthResult) -> None:
         return
     for method in FORCED_METHODS:
         _curve(ax, result.lengths, result.one_step[method], method,
-               result.target_M, mask=mask)
+               result.target_M, mask=mask, bands=bands)
 
 
 def _mark_M(ax, target_M):
-    ax.axvline(target_M, color="0.5", ls="--", lw=1)
+    ax.axvline(target_M, color=GRID_COLOR, linestyle="--",
+               linewidth=LINEWIDTH["reference"], zorder=1)
     ax.annotate(f"M={target_M}", (target_M, 0.98),
                 xycoords=("data", "axes fraction"), ha="center", va="top",
-                fontsize=9, color="0.4")
+                fontsize=8, color=TEXT_COLOR, zorder=6)
+
+
+def _finish_axis(ax, lengths, *, ylabel, title):
+    """The log-N axis every data-length figure shares, stated explicitly.
+
+    The log locator would label only the decades (10, 100) and render them as
+    powers; ``ScalarFormatter`` keeps them as plain integers, which reads better
+    against an "N" axis whose sampled values are 10..400.
+    """
+    ax.set_xscale("log")
+    ax.set_xlim(float(np.min(lengths)) * 0.85, float(np.max(lengths)) * 1.18)
+    ax.set_xticks([10, 100])
+    ax.xaxis.set_major_formatter(ScalarFormatter())
+    style_axis(ax, xlabel="Number of training pairs N", ylabel=ylabel,
+               title=title, grid=True)
+
+
+def _band_tag(bands: bool) -> str:
+    """Filename marker keeping the median-only variant beside the banded one."""
+    return "" if bands else "_nobands"
 
 
 def plot_two_versions(result: DataLengthResult, figure_dir: Path, system: str,
-                      title_suffix: str = "") -> tuple[Path, ...]:
+                      title_suffix: str = "", *,
+                      bands: bool = True) -> tuple[Path, ...]:
+    """One-step skill vs. N, in two variants.
+
+    The variant qualifier ("typical comparisons" / "best-feasible data EDMD,
+    M=min(N,p)") belongs in the LaTeX caption rather than on the figure, so the
+    panel title stays a single 9 pt line at single-column width.
+
+    ``bands=False`` writes a ``_nobands`` companion showing medians only.
+    """
     figure_dir.mkdir(parents=True, exist_ok=True)
     suffix = f" {title_suffix}".rstrip()
     slug = re.sub(r"[^0-9a-z]+", "_", system.lower()).strip("_")
     outputs = []
-    for tag, methods, version in (
-        ("", ("fno", "bno", "data_edmd"), "typical comparisons"),
-        ("_npairs", ("fno", "bno", "data_edmd_npairs"),
-         "best-feasible data EDMD, M=min(N,p)"),
+    for tag, methods in (
+        ("", ("fno", "bno", "data_edmd")),                  # typical comparisons
+        ("_npairs", ("fno", "bno", "data_edmd_npairs")),    # M=min(N,p)
     ):
-        fig, ax = plt.subplots(figsize=(6.6, 4.4))
-        for method in methods:
-            _curve(ax, result.lengths, result.one_step[method], method,
-                   result.target_M)
-        _forced_curves(ax, result)
-        _mark_M(ax, result.target_M)
-        ax.set(xscale="log", xlabel="Number of training pairs N",
-               ylabel="One-step generalization (relative $L^2$)",
-               title=f"{system}: one-step vs. training pairs{suffix}\n"
-                     f"({version})")
-        ax.grid(alpha=0.2)
-        ax.legend(frameon=False, fontsize=8)
-        fig.tight_layout()
-        pdf, _ = save_figure_pair(
-            fig, figure_dir / f"{slug}_one_step_vs_pairs{tag}.pdf")
-        plt.close(fig)
+        with publication_style():
+            fig, axes = make_figure(LAYOUT_DATA_LENGTH)
+            ax = axes[0, 0]
+            for method in methods:
+                _curve(ax, result.lengths, result.one_step[method], method,
+                       result.target_M, bands=bands)
+            _forced_curves(ax, result, bands=bands)
+            _mark_M(ax, result.target_M)
+            _finish_axis(ax, result.lengths,
+                         ylabel="One-step generalization\n(relative $L^2$)",
+                         title=f"{system}{suffix}")
+            add_legend(fig, *ax.get_legend_handles_labels(),
+                       loc=LAYOUT_DATA_LENGTH["legend_loc"],
+                       bbox_to_anchor=LAYOUT_DATA_LENGTH["legend_bbox"],
+                       ncol=LAYOUT_DATA_LENGTH["legend_ncol"])
+            pdf, _ = save_publication_pair(
+                fig, figure_dir / f"{slug}_one_step_vs_pairs{tag}"
+                                  f"{_band_tag(bands)}.pdf")
+            plt.close(fig)
         outputs.append(pdf)
     return tuple(outputs)
 
 
 def plot_valid_time(result: DataLengthResult, figure_dir: Path, system: str,
-                    title_suffix: str = "") -> Path:
+                    title_suffix: str = "", *, bands: bool = True) -> Path:
     """Valid-prediction-time vs. N -- where BSO's advantage over FNO shows."""
     figure_dir.mkdir(parents=True, exist_ok=True)
     suffix = f" {title_suffix}".rstrip()
     slug = re.sub(r"[^0-9a-z]+", "_", system.lower()).strip("_")
-    fig, ax = plt.subplots(figsize=(6.6, 4.4))
-    for method in ("fno", "bno", "data_edmd_npairs"):
-        _curve(ax, result.lengths, result.valid_time[method], method,
-               result.target_M)
-    mask = np.asarray(result.lengths) < result.target_M
-    if mask.any():
-        for method in FORCED_METHODS:
+    with publication_style():
+        fig, axes = make_figure(LAYOUT_DATA_LENGTH)
+        ax = axes[0, 0]
+        for method in ("fno", "bno", "data_edmd_npairs"):
             _curve(ax, result.lengths, result.valid_time[method], method,
-                   result.target_M, mask=mask)
-    _mark_M(ax, result.target_M)
-    ax.set(xscale="log", xlabel="Number of training pairs N",
-           ylabel=f"Valid-prediction-time (rel. $L^2$ < {VALID_TIME_THRESHOLD})",
-           title=f"{system}: valid-prediction-time vs. training pairs{suffix}")
-    ax.grid(alpha=0.2)
-    ax.legend(frameon=False, fontsize=8)
-    fig.tight_layout()
-    pdf, _ = save_figure_pair(fig, figure_dir / f"{slug}_valid_time_vs_pairs.pdf")
-    plt.close(fig)
+                   result.target_M, bands=bands)
+        mask = np.asarray(result.lengths) < result.target_M
+        if mask.any():
+            for method in FORCED_METHODS:
+                _curve(ax, result.lengths, result.valid_time[method], method,
+                       result.target_M, mask=mask, bands=bands)
+        _mark_M(ax, result.target_M)
+        _finish_axis(ax, result.lengths,
+                     ylabel="Valid-prediction-time\n"
+                            f"(rel. $L^2$ < {VALID_TIME_THRESHOLD})",
+                     title=f"{system}{suffix}")
+        add_legend(fig, *ax.get_legend_handles_labels(),
+                   loc=LAYOUT_DATA_LENGTH["legend_loc"],
+                   bbox_to_anchor=LAYOUT_DATA_LENGTH["legend_bbox"],
+                   ncol=LAYOUT_DATA_LENGTH["legend_ncol"])
+        pdf, _ = save_publication_pair(
+            fig, figure_dir / f"{slug}_valid_time_vs_pairs"
+                              f"{_band_tag(bands)}.pdf")
+        plt.close(fig)
     return pdf
 
 
@@ -434,3 +516,22 @@ def save_result(result: DataLengthResult, path: Path) -> None:
         arrays["gram_cond"] = result.gram_cond
     np.savez(path, lengths=result.lengths, seeds=result.seeds,
              target_M=result.target_M, step_time=result.step_time, **arrays)
+
+
+def load_result(path: Path) -> DataLengthResult:
+    """Inverse of :func:`save_result`, so figures can be restyled without a rerun.
+
+    Replotting from the stored arrays is the only way to change presentation
+    with a guarantee that the numbers did not move: this path cannot retrain.
+    """
+    with np.load(path) as data:
+        one_step = {k[len("one_step_"):]: data[k] for k in data.files
+                    if k.startswith("one_step_")}
+        valid_time = {k[len("valid_time_"):]: data[k] for k in data.files
+                      if k.startswith("valid_time_")}
+        return DataLengthResult(
+            lengths=data["lengths"], seeds=data["seeds"], one_step=one_step,
+            valid_time=valid_time, target_M=int(data["target_M"]),
+            step_time=float(data["step_time"]),
+            gram_rank=data["gram_rank"] if "gram_rank" in data else None,
+            gram_cond=data["gram_cond"] if "gram_cond" in data else None)

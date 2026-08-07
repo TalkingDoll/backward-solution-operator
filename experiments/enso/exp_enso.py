@@ -36,7 +36,10 @@ from experiments.enso.enso_data import (area_mean, build_grid_dataset,
 from experiments.enso.enso_direct import (predict_direct, train_direct)
 from experiments.enso.enso_lim import (fit_lim_direct, fit_lim_wang,
                                         predict_lim_direct)
-from plotting_utils import save_figure_pair
+from figure_style import (DOUBLE_COLUMN_WIDTH, GRID_COLOR, LINEWIDTH,
+                          MARKER_EDGE_WIDTH, MARKER_SIZE, add_figure_title,
+                          add_legend, make_figure, publication_style,
+                          save_publication_pair, style_axis)
 from project_paths import FIGURES_DIR, PROJECT_ROOT, RESULTS_DIR
 
 TARGET_M = 40
@@ -281,61 +284,104 @@ def one_step_diagnostic(data, result, G, patterns, origins, fields0) -> dict:
     }
 
 
+# Every curve property is stated explicitly, per the publication specification.
+# The BSO carries LINEWIDTH["main"]; climatology is a reference level rather than
+# a competing forecast. Labels are kept short enough to fit three legend columns
+# at 8 pt across 7.0 inches.
+METHOD_STYLE = {
+    "bno": dict(label="BSO (field rollout)", color="#d62728", linestyle="-",
+                linewidth=LINEWIDTH["main"], marker="o", zorder=8),
+    "lim": dict(label="LIM (field rollout)", color="#1f77b4", linestyle="-",
+                linewidth=LINEWIDTH["data"], marker="v", zorder=7),
+    "lim_wang": dict(label="LIM (Wang et al., τ₀=2)", color="#17becf",
+                     linestyle="-", linewidth=LINEWIDTH["data"], marker="D",
+                     zorder=6),
+    "lim_direct": dict(label="Direct lagged LIM", color="#8c564b",
+                       linestyle="-", linewidth=LINEWIDTH["data"], marker="^",
+                       zorder=5),
+    "direct_fno": dict(label="Direct FNO (index only)", color="#ff7f0e",
+                       linestyle="-", linewidth=LINEWIDTH["data"], marker="s",
+                       zorder=4),
+    "persistence": dict(label="Persistence", color="#7f7f7f", linestyle="-",
+                        linewidth=LINEWIDTH["data"], marker="None", zorder=2),
+    "damped_persistence": dict(label="Damped persistence", color="#2ca02c",
+                               linestyle="--", linewidth=LINEWIDTH["data"],
+                               marker="None", zorder=3),
+    "climatology": dict(label="Climatology", color="#000000",
+                        linestyle=(0, (6, 4)),
+                        linewidth=LINEWIDTH["reference"], marker="None",
+                        zorder=1),
+}
+
+# 1x3 wide layout. The bottom margin holds three legend rows plus the x label.
+LAYOUT_SKILL_1x3 = {
+    "figsize": (DOUBLE_COLUMN_WIDTH, 3.55), "nrows": 1, "ncols": 3,
+    "left": 0.52, "right": 0.10, "bottom": 1.06, "top": 0.52,
+    "wgap": 0.58, "hgap": 0.0,
+    "title_y": 0.975, "legend_loc": "lower center",
+    "legend_bbox": (0.5, 0.005), "legend_ncol": 3,
+}
+
+
+def draw_curve(ax, x, values, kw, *, with_label):
+    """One curve with colour, dash, weight, marker and z-order all explicit."""
+    return ax.plot(
+        x, values, label=kw["label"] if with_label else None,
+        color=kw["color"], linestyle=kw["linestyle"],
+        linewidth=kw["linewidth"], marker=kw["marker"],
+        markersize=MARKER_SIZE, markeredgewidth=MARKER_EDGE_WIDTH,
+        alpha=1.0, zorder=kw["zorder"])
+
+
 def plot(metrics, horizon, out_dir: Path):
     out_dir.mkdir(parents=True, exist_ok=True)
     leads = np.arange(1, horizon + 1)
-    style = {"bno": ("#d62728", "BSO (field rollout)"),
-             "lim": ("#1f77b4", "LIM (field rollout)"),
-             "climatology": ("#000000", "Climatology"),
-             "persistence": ("#7f7f7f", "Persistence"),
-             "damped_persistence": ("#2ca02c", "Damped persistence"),
-             "lim_wang": ("#17becf", "LIM (Wang et al., τ₀=2)"),
-             "lim_direct": ("#8c564b", "Direct lagged LIM (index only)"),
-             "direct_fno": ("#ff7f0e", "Direct field→index FNO (index only)")}
-    fig, axes = plt.subplots(1, 3, figsize=(13.5, 4.0))
-    for name, (color, label) in style.items():
-        m = metrics[name]
-        # A zero-anomaly forecast makes the Niño-3.4 RMSE equal to the RMS of
-        # the verifying observations, which drifts slightly because each lead
-        # verifies a different set of target months. That is a property of the
-        # verification window, not of the forecast, so climatology is drawn as
-        # its lead-average.
-        rmse = (np.full_like(m["nino34_rmse"], float(np.mean(m["nino34_rmse"])))
-                if name == "climatology" else m["nino34_rmse"])
-        if np.isfinite(m["rel_l2"]).any():          # index-only methods skip
-            axes[0].plot(leads, m["rel_l2"], color=color, marker="o",
-                         label=label)
-        axes[1].plot(leads, rmse, color=color, marker="o", label=label)
-        # Damped persistence scales persistence by gamma**lead, and correlation
-        # is invariant to a positive per-lead scaling, so its ACC coincides
-        # exactly with persistence's. Drawn dashed on top rather than omitted,
-        # so a legend entry does not look like a missing curve.
-        if name == "damped_persistence":
-            axes[2].plot(leads, m["nino34_acc"], color=color, ls="--", lw=1.6,
-                         label=f"{label} (= persistence)")
-        else:
-            axes[2].plot(leads, m["nino34_acc"], color=color, marker="o",
-                         label=label)
-    axes[0].set(xlabel="Lead (months)", ylabel="Field relative $L^2$",
-                title="Indo-Pacific field error")
-    axes[1].set(xlabel="Lead (months)", ylabel="RMSE (°C)",
-                title="Niño-3.4 error")
-    axes[2].set(xlabel="Lead (months)", ylabel="Anomaly correlation",
-                title="Niño-3.4 skill", ylim=(-0.2, 1.02))
-    for level in (0.5, 0.6):
-        axes[2].axhline(level, color="0.6", ls="--", lw=1)
-    for ax in axes:
-        ax.grid(alpha=0.2)
-    # One shared legend under all three panels: eight entries inside an axis
-    # covered the curves. Panel 2 carries every method, so take its handles.
-    fig.legend(*axes[1].get_legend_handles_labels(), loc="lower center",
-               ncol=4, frameon=False, fontsize=8)
-    fig.suptitle("ENSO prediction on ERSSTv5: field-rollout vs. direct "
-                 "Niño-3.4 forecasts, learned and linear")
-    fig.tight_layout()
-    fig.subplots_adjust(bottom=0.30, top=0.86)
-    pdf, _ = save_figure_pair(fig, out_dir / "enso_prediction_skill.pdf")
-    plt.close(fig)
+    with publication_style():
+        fig, axes = make_figure(LAYOUT_SKILL_1x3)
+        field_ax, rmse_ax, acc_ax = axes[0, 0], axes[0, 1], axes[0, 2]
+        for name, kw in METHOD_STYLE.items():
+            m = metrics[name]
+            # A zero-anomaly forecast makes the Niño-3.4 RMSE equal to the RMS
+            # of the verifying observations, which drifts slightly because each
+            # lead verifies a different set of target months. That is a property
+            # of the verification window, not of the forecast, so climatology is
+            # drawn as its lead-average.
+            rmse = (np.full_like(m["nino34_rmse"],
+                                 float(np.mean(m["nino34_rmse"])))
+                    if name == "climatology" else m["nino34_rmse"])
+            if np.isfinite(m["rel_l2"]).any():      # index-only methods skip
+                draw_curve(field_ax, leads, m["rel_l2"], kw, with_label=False)
+            # Panel 2 carries every method, so the shared legend takes its
+            # handles; the field panel is missing the index-only rows.
+            draw_curve(rmse_ax, leads, rmse, kw, with_label=True)
+            draw_curve(acc_ax, leads, m["nino34_acc"], kw, with_label=False)
+
+        style_axis(field_ax, xlabel="Lead (months)",
+                   ylabel="Field relative $L^2$",
+                   title="Indo-Pacific field error", grid=True)
+        style_axis(rmse_ax, xlabel="Lead (months)", ylabel="RMSE (°C)",
+                   title="Niño-3.4 error", grid=True)
+        style_axis(acc_ax, xlabel="Lead (months)",
+                   ylabel="Anomaly correlation", title="Niño-3.4 skill",
+                   grid=True)
+        for level in (0.5, 0.6):
+            acc_ax.axhline(level, color=GRID_COLOR, linestyle=":",
+                           linewidth=LINEWIDTH["reference"], zorder=0)
+        acc_ax.set_ylim(-0.2, 1.02)
+        for ax in (field_ax, rmse_ax, acc_ax):
+            ax.set_xlim(1, horizon)
+            ax.set_xticks(leads[1::2])
+
+        add_figure_title(fig, "ENSO prediction on ERSSTv5: field-rollout vs. "
+                              "direct Niño-3.4 forecasts",
+                         y=LAYOUT_SKILL_1x3["title_y"])
+        add_legend(fig, *rmse_ax.get_legend_handles_labels(),
+                   loc=LAYOUT_SKILL_1x3["legend_loc"],
+                   bbox_to_anchor=LAYOUT_SKILL_1x3["legend_bbox"],
+                   ncol=LAYOUT_SKILL_1x3["legend_ncol"])
+        pdf, _ = save_publication_pair(
+            fig, out_dir / "enso_prediction_skill.pdf")
+        plt.close(fig)
     return pdf
 
 

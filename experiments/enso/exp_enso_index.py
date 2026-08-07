@@ -71,7 +71,12 @@ from experiments.enso.exp_enso import (DATA_PATH, HORIZON, LIM_MODES, _corr,
                                         _nino34, damped_persistence_gamma,
                                         encode, fit_lim, lim_forecast)
 from experiments.enso.exp_enso_delay import HISTORY, delay_state
-from plotting_utils import print_figure_caption, save_figure_pair
+from figure_style import (DOUBLE_COLUMN_WIDTH, GRID_COLOR, LINEWIDTH,
+                          MARKER_EDGE_WIDTH, MARKER_SIZE, TEXT_COLOR,
+                          add_figure_title, add_legend, make_figure,
+                          publication_style, save_publication_pair,
+                          style_axis)
+from plotting_utils import print_figure_caption
 from project_paths import FIGURES_DIR, RESULTS_DIR
 
 # 1 constant + HISTORY fixed state coordinates + 11 learned functions, mirroring
@@ -290,16 +295,37 @@ def dictionary_features(dictionary, states: np.ndarray) -> np.ndarray:
 # Experiment
 # ---------------------------------------------------------------------------
 
-def _direct_metrics(pred_n34, truth_n34, horizon):
-    return dict(
-        nino34_rmse=np.sqrt(np.mean((pred_n34 - truth_n34) ** 2, axis=0)),
-        nino34_acc=np.array([_corr(pred_n34[:, l], truth_n34[:, l])
-                             for l in range(horizon)]))
+def _direct_metrics(pred_n34, truth_n34, horizon, mask=None):
+    """Per-lead RMSE and correlation, optionally over a ragged origin set.
+
+    ``mask[i, l]`` marks origin ``i`` as having an observed target at lead
+    ``l+1``. At the 12-month horizon every origin has every lead and ``mask`` is
+    ``None``; the long-lead variant runs out of verifying months at the end of
+    the record, so each lead is scored on whatever origins it has.
+    """
+    rmse, acc = np.empty(horizon), np.empty(horizon)
+    for lead in range(horizon):
+        keep = (slice(None) if mask is None
+                else np.flatnonzero(mask[:, lead]))
+        p, t = pred_n34[keep, lead], truth_n34[keep, lead]
+        rmse[lead] = np.sqrt(np.mean((p - t) ** 2)) if len(p) else np.nan
+        acc[lead] = _corr(p, t) if len(p) > 2 else np.nan
+    return dict(nino34_rmse=rmse, nino34_acc=acc)
 
 
-def run(quick: bool) -> dict:
+def run(quick: bool, horizon: int | None = None, ragged: bool = False) -> dict:
+    """Fit everything and score it.
+
+    ``horizon`` overrides the 12-month default. ``ragged`` scores each lead on
+    every origin that has an observed target rather than on one common origin
+    set -- necessary past ~24 months, where a fixed origin set would collapse to
+    a handful of launches. It is off at the default horizon so those numbers are
+    unaffected.
+    """
     data = load_ersstv5(DATA_PATH)
-    horizon = 4 if quick else HORIZON
+    if horizon is None:
+        horizon = 4 if quick else HORIZON
+    horizon = int(horizon)
     ckpt_dir = None if quick else RESULTS_DIR / "enso_index"
 
     index = _nino34(data, data.anomalies)
@@ -339,10 +365,21 @@ def run(quick: bool) -> dict:
     # the dictionary itself.
     psi_linear = states                                   # Psi(z) = [1, z]
 
-    origins = np.arange(data.train_end, data.test_end - horizon)
+    # Fixed origin set: every launch verifies every lead. Ragged: launch from
+    # every post-training month and let each lead use the origins that still
+    # have an observed target inside the test window. The 18-month reserve past
+    # ``test_end`` stays untouched either way.
+    if ragged:
+        origins = np.arange(data.train_end, data.test_end - 1)
+        targets = origins[:, None] + np.arange(1, horizon + 1)[None, :]
+        mask = targets < data.test_end
+        truth_n34 = index[np.clip(targets, 0, data.test_end - 1)]
+    else:
+        origins = np.arange(data.train_end, data.test_end - horizon)
+        mask = None
+        truth_n34 = np.stack([index[origins + lead]
+                              for lead in range(1, horizon + 1)], axis=1)
     fit_origins = np.arange(HISTORY - 1, data.train_end - horizon)
-    truth_n34 = np.stack([index[origins + lead]
-                          for lead in range(1, horizon + 1)], axis=1)
 
     variants = [(f"bso_direct_learned{key}",
                  dictionary_features(d, states)[:, 1:])
@@ -351,7 +388,8 @@ def run(quick: bool) -> dict:
     for name, features in variants + [("bso_direct_linear", psi_linear)]:
         weights = fit_lim_direct(features, index, fit_origins, horizon)
         metrics[name] = _direct_metrics(
-            predict_lim_direct(weights, features[origins]), truth_n34, horizon)
+            predict_lim_direct(weights, features[origins]), truth_n34, horizon,
+            mask)
 
     # --- baselines, all index-space and all fitted training-only ---------
     eof = fit_eofs(data, data.train_end, LIM_MODES)
@@ -360,35 +398,42 @@ def run(quick: bool) -> dict:
     lim_n34 = np.stack(
         [_nino34(data, lim_forecast(G, coeff[origins], horizon)[:, l]
                  @ eof.patterns[:LIM_MODES]) for l in range(horizon)], axis=1)
-    metrics["lim"] = _direct_metrics(lim_n34, truth_n34, horizon)
+    metrics["lim"] = _direct_metrics(lim_n34, truth_n34, horizon, mask)
 
     lim_direct_w = fit_lim_direct(coeff, index, fit_origins, horizon)
     metrics["lim_direct"] = _direct_metrics(
-        predict_lim_direct(lim_direct_w, coeff[origins]), truth_n34, horizon)
+        predict_lim_direct(lim_direct_w, coeff[origins]), truth_n34, horizon,
+        mask)
 
-    # Reuses the checkpoint written by ``exp_enso``, so the shared comparator
-    # is the identical trained model rather than a re-fit of it.
+    # At the default horizon this reuses the checkpoint written by ``exp_enso``,
+    # so the shared comparator is the identical trained model rather than a
+    # re-fit. A different horizon changes the number of output heads, so it gets
+    # its own file instead of silently overwriting the 12-month one.
+    direct_ckpt = ("direct.pt" if horizon == HORIZON
+                   else f"direct_h{horizon}.pt")
     direct_model, direct_scale = train_direct(
         data, fit_origins, index, horizon,
         modes=(6, 10) if quick else (12, 24), width=16 if quick else 48,
         layers=2 if quick else 4, epochs=30 if quick else 400,
-        checkpoint=None if quick else RESULTS_DIR / "enso" / "direct.pt")
+        checkpoint=None if quick else RESULTS_DIR / "enso" / direct_ckpt)
     metrics["direct_fno"] = _direct_metrics(
         predict_direct(direct_model, data.anomalies[origins], direct_scale),
-        truth_n34, horizon)
+        truth_n34, horizon, mask)
 
     gamma = damped_persistence_gamma(data, horizon)
     launch = index[origins][:, None]
     leads = np.arange(1, horizon + 1)
     metrics["climatology"] = _direct_metrics(
-        np.zeros_like(truth_n34), truth_n34, horizon)
+        np.zeros_like(truth_n34), truth_n34, horizon, mask)
     metrics["persistence"] = _direct_metrics(
-        np.repeat(launch, horizon, axis=1), truth_n34, horizon)
+        np.repeat(launch, horizon, axis=1), truth_n34, horizon, mask)
     metrics["damped_persistence"] = _direct_metrics(
-        launch * (gamma ** leads)[None], truth_n34, horizon)
+        launch * (gamma ** leads)[None], truth_n34, horizon, mask)
 
     return dict(data=data, horizon=horizon, metrics=metrics, gamma=gamma,
-                n_origins=len(origins), n_fit=len(fit_origins),
+                n_origins=len(origins), ragged=bool(ragged),
+                origins_per_lead=(None if mask is None
+                                  else mask.sum(axis=0).astype(int)), n_fit=len(fit_origins),
                 dictionary_size=dictionaries[""].dictionary_size,
                 n_learned=dictionaries[""].n_learned_observables,
                 invariance_mse=float(dict_diag["weighted_invariance_mse"]),
@@ -397,94 +442,174 @@ def run(quick: bool) -> dict:
                         for n in range(1, horizon + 1)])
 
 
-def plot(metrics, horizon, out_dir: Path):
-    out_dir.mkdir(parents=True, exist_ok=True)
-    leads = np.arange(1, horizon + 1)
-    style = {
-        "bso_direct_learned": ("#d62728", "BSO direct (learned dictionary)"),
-        "bso_direct_learned_w64": ("#e377c2",
-                                   "BSO direct (learned, wide 64×64)"),
-        "bso_direct_linear": ("#9467bd", "BSO direct (linear control)"),
-        "direct_fno": ("#ff7f0e", "Direct field→index FNO"),
-        "lim_direct": ("#8c564b", "Direct lagged LIM"),
-        "lim": ("#1f77b4", "LIM (field rollout)"),
-        "climatology": ("#000000", "Climatology"),
-        "persistence": ("#7f7f7f", "Persistence"),
-        "damped_persistence": ("#2ca02c", "Damped persistence")}
-    fig, axes = plt.subplots(1, 2, figsize=(10.0, 4.0))
-    for name, (color, label) in style.items():
-        m = metrics[name]
-        # A zero-anomaly forecast makes the Niño-3.4 RMSE equal to the RMS of
-        # the verifying observations, which drifts slightly because each lead
-        # verifies a different set of target months. That is a property of the
-        # verification window, not of the forecast, so climatology is drawn as
-        # its lead-average.
-        rmse = (np.full_like(m["nino34_rmse"], float(np.mean(m["nino34_rmse"])))
-                if name == "climatology" else m["nino34_rmse"])
-        # The wide dictionary is a sensitivity check on the headline fit, so it
-        # is expected to lie near it. Drawn dashed for the same reason damped
-        # persistence is: if the two coincide, a solid overplot would hide one
-        # curve and its legend entry would read as a missing line.
-        if name == "bso_direct_learned_w64":
-            axes[0].plot(leads, rmse, color=color, ls="--", lw=1.6, label=label)
-            axes[1].plot(leads, m["nino34_acc"], color=color, ls="--", lw=1.6,
-                         label=label)
-            continue
-        axes[0].plot(leads, rmse, color=color, marker="o", label=label)
-        # Correlation is invariant to the positive per-lead scaling
-        # gamma**lead, so damped persistence coincides exactly with
-        # persistence. Drawn dashed on top of it: omitting it instead makes a
-        # legend entry look like a missing curve.
-        if name == "damped_persistence":
-            axes[1].plot(leads, m["nino34_acc"], color=color, ls="--", lw=1.6,
-                         label=f"{label} (= persistence)")
-        else:
-            axes[1].plot(leads, m["nino34_acc"], color=color, marker="o",
-                         label=label)
-    axes[0].set(xlabel="Lead (months)", ylabel="RMSE (°C)",
-                title="Niño-3.4 error")
-    axes[1].set(xlabel="Lead (months)", ylabel="Anomaly correlation",
-                title="Niño-3.4 skill", ylim=(-0.2, 1.02))
-    for level in (0.5, 0.6):
-        axes[1].axhline(level, color="0.6", ls="--", lw=1)
-    for ax in axes:
-        ax.grid(alpha=0.2)
-    fig.legend(*axes[0].get_legend_handles_labels(), loc="lower center",
-               ncol=4, frameon=False, fontsize=8)
-    fig.suptitle("Direct Niño-3.4 forecasting through the BSO framework "
-                 f"({HISTORY}-month index delay state, ERSSTv5)")
-    fig.tight_layout()
-    fig.subplots_adjust(bottom=0.28, top=0.86)
-    pdf, _ = save_figure_pair(fig, out_dir / "enso_index_prediction_skill.pdf")
-    plt.close(fig)
-    return pdf
+# Nine curves, every property explicit. Dashed entries are the ones expected to
+# lie on top of another curve: the wide-dictionary sensitivity check tracks the
+# headline fit, and damped persistence has exactly persistence's correlation.
+# Drawing them dashed rather than omitting them keeps a legend entry from
+# reading as a missing line.
+DIAGNOSTIC_STYLE = {
+    "bso_direct_learned": dict(
+        label="BSO direct (learned)", color="#d62728", linestyle="-",
+        linewidth=LINEWIDTH["main"], marker="o", zorder=9),
+    "bso_direct_learned_w64": dict(
+        label="BSO direct (wide 64×64)", color="#e377c2", linestyle="--",
+        linewidth=LINEWIDTH["data"], marker="None", zorder=8),
+    "bso_direct_linear": dict(
+        label="BSO direct (linear control)", color="#9467bd", linestyle="-",
+        linewidth=LINEWIDTH["data"], marker="o", zorder=7),
+    "direct_fno": dict(
+        label="Direct FNO (index only)", color="#ff7f0e", linestyle="-",
+        linewidth=LINEWIDTH["data"], marker="s", zorder=6),
+    "lim_direct": dict(
+        label="Direct lagged LIM", color="#8c564b", linestyle="-",
+        linewidth=LINEWIDTH["data"], marker="^", zorder=5),
+    "lim": dict(
+        label="LIM (field rollout)", color="#1f77b4", linestyle="-",
+        linewidth=LINEWIDTH["data"], marker="v", zorder=4),
+    "climatology": dict(
+        label="Climatology", color="#000000", linestyle=(0, (6, 4)),
+        linewidth=LINEWIDTH["reference"], marker="None", zorder=1),
+    "persistence": dict(
+        label="Persistence", color="#7f7f7f", linestyle="-",
+        linewidth=LINEWIDTH["data"], marker="None", zorder=2),
+    "damped_persistence": dict(
+        label="Damped persistence", color="#2ca02c", linestyle="--",
+        linewidth=LINEWIDTH["data"], marker="None", zorder=3),
+}
 
-
-# Pruned to five curves for talks. The full eight-curve diagnostic above stays
-# as the reference figure; this one drops the linear control, the wide-dictionary
-# sensitivity curve, the propagated LIM and plain persistence.
-# Direct FNO is purple here rather than the diagnostic figure's orange: its
-# curve nearly coincides with the BSO's, and red/orange are hard to separate at
-# projector distance.
-PRESENTATION_STYLE = {
-    "bso_direct_learned": ("#d62728", "BSO (direct, learned dictionary)"),
-    "direct_fno": ("#7b3294", "Direct field→index FNO"),
-    "lim_direct": ("#1f77b4", "LIM (direct lagged)"),
-    "damped_persistence": ("#2ca02c", "Damped persistence"),
-    "climatology": ("#4d4d4d", "Climatology (RMSE only)"),
+LAYOUT_DIAGNOSTIC = {
+    "figsize": (DOUBLE_COLUMN_WIDTH, 3.55), "nrows": 1, "ncols": 2,
+    "left": 0.52, "right": 0.10, "bottom": 1.06, "top": 0.52,
+    "wgap": 0.62, "hgap": 0.0,
+    "title_y": 0.975, "legend_loc": "lower center",
+    "legend_bbox": (0.5, 0.005), "legend_ncol": 3,
 }
 
 
-def plot_presentation(metrics, horizon, out_dir: Path, data) -> Path:
-    """Talk figure: Niño-3.4 RMSE (°C) and anomaly correlation, five methods.
+def _draw(ax, x, values, kw, *, with_label):
+    """One curve with every property stated; markers only where declared."""
+    return ax.plot(
+        x, values, label=kw["label"] if with_label else None,
+        color=kw["color"], linestyle=kw["linestyle"],
+        linewidth=kw["linewidth"], marker=kw["marker"],
+        markersize=MARKER_SIZE, markeredgewidth=MARKER_EDGE_WIDTH,
+        alpha=1.0, zorder=kw["zorder"])
+
+
+def plot(metrics, horizon, out_dir: Path):
+    out_dir.mkdir(parents=True, exist_ok=True)
+    leads = np.arange(1, horizon + 1)
+    with publication_style():
+        fig, axes = make_figure(LAYOUT_DIAGNOSTIC)
+        rmse_ax, acc_ax = axes[0, 0], axes[0, 1]
+        for name, kw in DIAGNOSTIC_STYLE.items():
+            m = metrics[name]
+            # A zero-anomaly forecast makes the Niño-3.4 RMSE equal to the RMS
+            # of the verifying observations, which drifts slightly because each
+            # lead verifies a different set of target months. That is a property
+            # of the verification window, not of the forecast, so climatology is
+            # drawn as its lead-average.
+            rmse = (np.full_like(m["nino34_rmse"],
+                                 float(np.mean(m["nino34_rmse"])))
+                    if name == "climatology" else m["nino34_rmse"])
+            _draw(rmse_ax, leads, rmse, kw, with_label=True)
+            _draw(acc_ax, leads, m["nino34_acc"], kw, with_label=False)
+
+        style_axis(rmse_ax, xlabel="Lead (months)", ylabel="RMSE (°C)",
+                   title="Niño-3.4 error", grid=True)
+        style_axis(acc_ax, xlabel="Lead (months)",
+                   ylabel="Anomaly correlation", title="Niño-3.4 skill",
+                   grid=True)
+        for level in (0.5, 0.6):
+            acc_ax.axhline(level, color=GRID_COLOR, linestyle=":",
+                           linewidth=LINEWIDTH["reference"], zorder=0)
+        acc_ax.set_ylim(-0.2, 1.02)
+        for ax in (rmse_ax, acc_ax):
+            ax.set_xlim(1, horizon)
+            ax.set_xticks(leads[1::2])
+
+        add_figure_title(
+            fig, "Direct Niño-3.4 forecasting through the BSO framework "
+                 f"({HISTORY}-month index delay state, ERSSTv5)",
+            y=LAYOUT_DIAGNOSTIC["title_y"])
+        add_legend(fig, *rmse_ax.get_legend_handles_labels(),
+                   loc=LAYOUT_DIAGNOSTIC["legend_loc"],
+                   bbox_to_anchor=LAYOUT_DIAGNOSTIC["legend_bbox"],
+                   ncol=LAYOUT_DIAGNOSTIC["legend_ncol"])
+        pdf, _ = save_publication_pair(
+            fig, out_dir / "enso_index_prediction_skill.pdf")
+        plt.close(fig)
+    return pdf
+
+
+# Pruned to five curves: the full nine-curve diagnostic above stays as the
+# reference figure, and this one drops the linear control, the wide-dictionary
+# sensitivity curve, the propagated LIM and plain persistence.
+# Every curve's colour, dash pattern, weight, marker and draw order is stated
+# here, per the publication specification -- nothing is left to a Matplotlib
+# default. The BSO carries LINEWIDTH["main"]; climatology is a reference level
+# rather than a competing forecast and carries LINEWIDTH["reference"].
+# Direct FNO is purple rather than the diagnostic figure's orange: its curve
+# nearly coincides with the BSO's and red/orange do not separate cleanly.
+PRESENTATION_STYLE = {
+    "bso_direct_learned": dict(
+        label="BSO", color="#d62728", linestyle="-",
+        linewidth=LINEWIDTH["main"], marker="o", markersize=MARKER_SIZE,
+        markeredgewidth=MARKER_EDGE_WIDTH, alpha=1.0, zorder=5),
+    "direct_fno": dict(
+        label="FNO", color="#7b3294", linestyle="-",
+        linewidth=LINEWIDTH["data"], marker="s", markersize=MARKER_SIZE,
+        markeredgewidth=MARKER_EDGE_WIDTH, alpha=1.0, zorder=4),
+    "lim_direct": dict(
+        label="LIM", color="#1f77b4", linestyle="-",
+        linewidth=LINEWIDTH["data"], marker="^", markersize=MARKER_SIZE,
+        markeredgewidth=MARKER_EDGE_WIDTH, alpha=1.0, zorder=3),
+    "damped_persistence": dict(
+        label="Damped persistence", color="#2ca02c", linestyle="--",
+        linewidth=LINEWIDTH["data"], marker="None", markersize=MARKER_SIZE,
+        markeredgewidth=MARKER_EDGE_WIDTH, alpha=1.0, zorder=2),
+    "climatology": dict(
+        label="Climatology", color="#4d4d4d", linestyle=(0, (6, 4)),
+        linewidth=LINEWIDTH["reference"], marker="None",
+        markersize=MARKER_SIZE, markeredgewidth=MARKER_EDGE_WIDTH,
+        alpha=1.0, zorder=1),
+}
+
+# 1x2 wide layout. Margins and gaps in inches; the bottom margin holds one
+# legend row plus the x-axis label.
+LAYOUT_PRESENTATION = {
+    "figsize": (DOUBLE_COLUMN_WIDTH, 2.95), "nrows": 1, "ncols": 2,
+    "left": 0.52, "right": 0.10, "bottom": 0.66, "top": 0.42,
+    "wgap": 0.62, "hgap": 0.0,
+    "title_y": 0.965, "legend_loc": "lower center",
+    "legend_bbox": (0.5, 0.005), "legend_ncol": 5,
+}
+
+
+# Extended-lead variant: the same figure carried to two years. 24 points per
+# curve still read cleanly, so it needs no styling special cases -- only the tick
+# spacing scales, and that is derived from the horizon below.
+LONG_HORIZON = 24
+PRESENTATION_FILENAME = "nino34_forecast_skill.pdf"
+LONG_FILENAME = "nino34_forecast_skill_long.pdf"
+
+
+def plot_presentation(metrics, horizon, out_dir: Path, *,
+                      filename: str = PRESENTATION_FILENAME) -> Path:
+    """Niño-3.4 RMSE (°C) and anomaly correlation for five methods.
+
+    ``filename`` is explicit rather than inferred from ``horizon``: two runs at
+    different horizons write two figures, and deriving the path from a threshold
+    let one silently overwrite the other.
 
     Two properties of this curve set are handled here rather than left to the
     caption, because both would otherwise read as plotting bugs:
 
     * **Climatology has no anomaly correlation.** A zero-anomaly forecast has
       zero variance, so Pearson correlation is undefined and ``_corr`` returns
-      NaN by design. It is therefore drawn in the RMSE panel only, and its legend
-      entry says so.
+      NaN by design. It is drawn in the RMSE panel only, and since the legend
+      labels are deliberately short here, that fact lives in the printed caption
+      rather than on the axes.
     * **Damped persistence's correlation is exactly persistence's**, since
       correlation is invariant to the positive per-lead scaling ``gamma**lead``.
       That curve is the lag-τ autocorrelation of Niño-3.4; damping shows up in
@@ -492,58 +617,53 @@ def plot_presentation(metrics, horizon, out_dir: Path, data) -> Path:
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     leads = np.arange(1, horizon + 1)
-    first = np.datetime64(data.times[data.train_end + 1], "M")
-    last = np.datetime64(data.times[data.test_end - 1], "M")
-    n_origins = int(data.test_end - horizon - data.train_end)
+    # Roughly six labelled ticks whatever the horizon: every 2 months at a
+    # one-year lead, every 4 at two years.
+    step = max(1, int(round(horizon / 6)))
 
-    with plt.rc_context({"font.size": 12, "axes.titlesize": 13,
-                         "axes.labelsize": 12, "legend.fontsize": 11,
-                         "xtick.labelsize": 11, "ytick.labelsize": 11}):
-        fig, axes = plt.subplots(1, 2, figsize=(11.0, 4.4))
-        for name, (color, label) in PRESENTATION_STYLE.items():
+    with publication_style():
+        fig, axes = make_figure(LAYOUT_PRESENTATION)
+        rmse_ax, acc_ax = axes[0, 0], axes[0, 1]
+        for name, kw in PRESENTATION_STYLE.items():
             m = metrics[name]
-            # Climatology is a reference level, not a competing method, so it is
-            # drawn lighter than the forecasts rather than equally weighted.
-            if name == "climatology":
-                kw = dict(color=color, lw=1.6, ls=(0, (6, 4)))
-            elif name == "damped_persistence":
-                kw = dict(color=color, lw=2.2, ls="--")
-            else:
-                kw = dict(color=color, lw=2.2, marker="o", ms=5)
             # Climatology's RMSE drifts across leads only because each lead
             # verifies a different set of target months -- a property of the
             # verification window, not the forecast -- so it is drawn as its
             # lead-average constant.
             rmse = (np.full_like(m["nino34_rmse"],
-                                 float(np.mean(m["nino34_rmse"])))
+                                 float(np.nanmean(m["nino34_rmse"])))
                     if name == "climatology" else m["nino34_rmse"])
-            axes[0].plot(leads, rmse, label=label, **kw)
+            rmse_ax.plot(leads, rmse, **kw)
             if name != "climatology":
-                axes[1].plot(leads, m["nino34_acc"], **kw)
+                acc_ax.plot(leads, m["nino34_acc"], **{**kw, "label": None})
 
-        axes[0].set(xlabel="Forecast lead (months)", ylabel="RMSE (°C)",
-                    title="Error", xticks=leads[1::2])
-        axes[1].set(xlabel="Forecast lead (months)",
-                    ylabel="Anomaly correlation", title="Skill",
-                    ylim=(-0.1, 1.02), xticks=leads[1::2])
-        axes[1].axhline(0.5, color="0.55", ls=":", lw=1.4)
-        axes[1].text(horizon, 0.52, "ACC = 0.5", ha="right", va="bottom",
-                     fontsize=9, color="0.4")
-        for ax in axes:
-            ax.grid(alpha=0.18)
+        style_axis(rmse_ax, xlabel="Forecast lead (months)",
+                   ylabel="RMSE (°C)", title="Error", grid=True)
+        style_axis(acc_ax, xlabel="Forecast lead (months)",
+                   ylabel="Anomaly correlation", title="Skill", grid=True)
+        acc_ax.axhline(0.5, color=GRID_COLOR, linestyle=":",
+                       linewidth=LINEWIDTH["reference"], zorder=0)
+        acc_ax.text(horizon, 0.52, "ACC = 0.5", ha="right", va="bottom",
+                    fontsize=8, color=TEXT_COLOR)
+        # Follow the data downward rather than fixing the floor: at longer
+        # horizons the trivial baselines go clearly negative, and a hard -0.1
+        # limit clipped them mid-curve so they looked like they stopped. The
+        # min() keeps the one-year figure at its existing -0.1.
+        acc_min = min(float(np.nanmin(metrics[name]["nino34_acc"]))
+                      for name in PRESENTATION_STYLE if name != "climatology")
+        acc_ax.set_ylim(min(-0.1, np.floor((acc_min - 0.05) * 10) / 10), 1.02)
+        for ax in (rmse_ax, acc_ax):
             ax.set_xlim(1, horizon)
+            ax.set_xticks(np.arange(step, horizon + 1, step))
 
         # The RMSE panel carries all five methods, so its handles are complete.
-        fig.legend(*axes[0].get_legend_handles_labels(), loc="lower center",
-                   ncol=3, frameon=False)
-        fig.suptitle("Niño-3.4 Forecast skill (ERSSTv5)", fontsize=15,
-                     fontweight="bold")
-        fig.text(0.5, 0.895,
-                 f"{n_origins} monthly forecasts, verifying {first} – {last}",
-                 ha="center", fontsize=10, color="0.35")
-        fig.tight_layout()
-        fig.subplots_adjust(bottom=0.30, top=0.82)
-        pdf, _ = save_figure_pair(fig, out_dir / "nino34_forecast_skill.pdf")
+        add_figure_title(fig, "Niño-3.4 Forecast skill (ERSSTv5)",
+                         y=LAYOUT_PRESENTATION["title_y"])
+        add_legend(fig, *rmse_ax.get_legend_handles_labels(),
+                   loc=LAYOUT_PRESENTATION["legend_loc"],
+                   bbox_to_anchor=LAYOUT_PRESENTATION["legend_bbox"],
+                   ncol=LAYOUT_PRESENTATION["legend_ncol"])
+        pdf, _ = save_publication_pair(fig, out_dir / filename)
         plt.close(fig)
     return pdf
 
@@ -551,11 +671,39 @@ def plot_presentation(metrics, horizon, out_dir: Path, data) -> Path:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--quick", action="store_true")
+    parser.add_argument(
+        "--long", action="store_true",
+        help=f"score out to {LONG_HORIZON} months instead of {HORIZON}, into a "
+             f"separate figure ({LONG_FILENAME}). Each lead is verified on "
+             "every origin that still has an observed target, so the sample "
+             "shrinks with lead; the direct FNO is retrained because its head "
+             "count is the horizon.")
     args = parser.parse_args()
+    if args.long:
+        result = run(args.quick, horizon=LONG_HORIZON, ragged=True)
+        counts = result["origins_per_lead"]
+        horizon = result["horizon"]
+        pdf = plot_presentation(result["metrics"], horizon,
+                                FIGURES_DIR / "enso", filename=LONG_FILENAME)
+        print(f"\n[enso-index] {horizon}-month figure written to {pdf}")
+        print(f"[enso-index] verifying origins fall from {counts[0]} at lead 1 "
+              f"to {counts[-1]} at lead {horizon}")
+        acc = result["metrics"]["bso_direct_learned"]["nino34_acc"]
+        below = np.flatnonzero(acc < 0.5)
+        print("[enso-index] BSO Niño-3.4 ACC drops below 0.5 at lead "
+              f"{int(below[0]) + 1}" if len(below) else
+              "[enso-index] BSO ACC stays above 0.5 across all leads")
+        picks = [i for i in (1, 6, 12, 18, 24) if i <= horizon]
+        print("[enso-index] Niño-3.4 ACC at leads "
+              + ", ".join(str(i) for i in picks) + ":")
+        for name, m in result["metrics"].items():
+            print(f"  {name:24s} "
+                  + " ".join(f"{m['nino34_acc'][i - 1]:6.2f}" for i in picks))
+        return
     result = run(args.quick)
     pdf = plot(result["metrics"], result["horizon"], FIGURES_DIR / "enso")
     talk_pdf = plot_presentation(result["metrics"], result["horizon"],
-                                 FIGURES_DIR / "enso", result["data"])
+                                 FIGURES_DIR / "enso")
     print(f"\n[enso-index] dictionary 1 + {HISTORY} + "
           f"{result['n_learned']} = {result['dictionary_size']} functions")
     print(f"[enso-index] phase-B invariance MSE = "

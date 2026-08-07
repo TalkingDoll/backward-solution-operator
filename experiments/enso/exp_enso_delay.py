@@ -44,11 +44,15 @@ from experiments.enso.enso_data import fit_eofs, load_ersstv5
 from experiments.enso.enso_direct import predict_direct, train_direct
 from experiments.enso.enso_lim import (fit_lim_direct, fit_lim_wang,
                                         predict_lim_direct)
-from experiments.enso.exp_enso import (DATA_PATH, HORIZON, LIM_MODES, TARGET_M,
-                                        _corr, _field_rel_l2, _nino34,
-                                        _valid_time, damped_persistence_gamma,
-                                        decode, encode, fit_lim, lim_forecast)
-from plotting_utils import save_figure_pair
+from experiments.enso.exp_enso import (DATA_PATH, HORIZON, LAYOUT_SKILL_1x3,
+                                        LIM_MODES, TARGET_M, _corr,
+                                        _field_rel_l2, _nino34, _valid_time,
+                                        damped_persistence_gamma, decode,
+                                        draw_curve, encode, fit_lim,
+                                        lim_forecast)
+from figure_style import (GRID_COLOR, LINEWIDTH, add_figure_title, add_legend,
+                          make_figure, publication_style,
+                          save_publication_pair, style_axis)
 from project_paths import FIGURES_DIR, RESULTS_DIR
 
 HISTORY = 12          # months of memory, matching the old comparison suite
@@ -270,55 +274,79 @@ def _one_step(data, result, states, origins, patterns, fields0) -> dict:
     }
 
 
+# Same construction as ``exp_enso.METHOD_STYLE``, with the delay-embedded BSO
+# and its memory-matched LIM added and the labels adjusted to say which is which.
+DELAY_METHOD_STYLE = {
+    "bno": dict(label="BSO (delay rollout)", color="#d62728", linestyle="-",
+                linewidth=LINEWIDTH["main"], marker="o", zorder=9),
+    "lim_delay": dict(label="LIM (matched memory)", color="#9467bd",
+                      linestyle="-", linewidth=LINEWIDTH["data"], marker="P",
+                      zorder=8),
+    "lim": dict(label="LIM (instantaneous)", color="#1f77b4", linestyle="-",
+                linewidth=LINEWIDTH["data"], marker="v", zorder=7),
+    "lim_wang": dict(label="LIM (Wang et al., τ₀=2)", color="#17becf",
+                     linestyle="-", linewidth=LINEWIDTH["data"], marker="D",
+                     zorder=6),
+    "lim_direct": dict(label="Direct lagged LIM", color="#8c564b",
+                       linestyle="-", linewidth=LINEWIDTH["data"], marker="^",
+                       zorder=5),
+    "direct_fno": dict(label="Direct FNO (index only)", color="#ff7f0e",
+                       linestyle="-", linewidth=LINEWIDTH["data"], marker="s",
+                       zorder=4),
+    "persistence": dict(label="Persistence", color="#7f7f7f", linestyle="-",
+                        linewidth=LINEWIDTH["data"], marker="None", zorder=2),
+    "damped_persistence": dict(label="Damped persistence", color="#2ca02c",
+                               linestyle="--", linewidth=LINEWIDTH["data"],
+                               marker="None", zorder=3),
+    "climatology": dict(label="Climatology", color="#000000",
+                        linestyle=(0, (6, 4)),
+                        linewidth=LINEWIDTH["reference"], marker="None",
+                        zorder=1),
+}
+
+
 def plot(metrics, horizon, out_dir: Path):
     out_dir.mkdir(parents=True, exist_ok=True)
     leads = np.arange(1, horizon + 1)
-    style = {"bno": ("#d62728", "BSO (delay, field rollout)"),
-             "lim_delay": ("#9467bd", "LIM (delay, matched memory)"),
-             "lim": ("#1f77b4", "LIM (instantaneous, field rollout)"),
-             "climatology": ("#000000", "Climatology"),
-             "persistence": ("#7f7f7f", "Persistence"),
-             "damped_persistence": ("#2ca02c", "Damped persistence"),
-             "lim_wang": ("#17becf", "LIM (Wang et al., τ₀=2)"),
-             "lim_direct": ("#8c564b", "Direct lagged LIM (index only)"),
-             "direct_fno": ("#ff7f0e", "Direct field→index FNO (index only)")}
-    fig, axes = plt.subplots(1, 3, figsize=(13.5, 4.0))
-    for name, (color, label) in style.items():
-        m = metrics[name]
-        rmse = (np.full_like(m["nino34_rmse"], float(np.mean(m["nino34_rmse"])))
-                if name == "climatology" else m["nino34_rmse"])
-        if np.isfinite(m["rel_l2"]).any():          # index-only methods skip
-            axes[0].plot(leads, m["rel_l2"], color=color, marker="o",
-                         label=label)
-        axes[1].plot(leads, rmse, color=color, marker="o", label=label)
-        if name == "damped_persistence":
-            # Correlation is invariant to the positive per-lead scaling
-            # gamma**lead, so this coincides exactly with persistence. Drawn
-            # dashed on top of it: omitting it instead makes a legend entry
-            # look like a missing curve.
-            axes[2].plot(leads, m["nino34_acc"], color=color, ls="--", lw=1.6,
-                         label=f"{label} (= persistence)")
-        else:
-            axes[2].plot(leads, m["nino34_acc"], color=color, marker="o",
-                         label=label)
-    axes[0].set(xlabel="Lead (months)", ylabel="Field relative $L^2$",
-                title="Indo-Pacific field error")
-    axes[1].set(xlabel="Lead (months)", ylabel="RMSE (°C)",
-                title="Niño-3.4 error")
-    axes[2].set(xlabel="Lead (months)", ylabel="Anomaly correlation",
-                title="Niño-3.4 skill", ylim=(-0.2, 1.02))
-    for level in (0.5, 0.6):
-        axes[2].axhline(level, color="0.6", ls="--", lw=1)
-    for ax in axes:
-        ax.grid(alpha=0.2)
-    fig.legend(*axes[1].get_legend_handles_labels(), loc="lower center",
-               ncol=4, frameon=False, fontsize=8)
-    fig.suptitle(f"ENSO prediction with a {HISTORY}-month delay embedding "
-                 "(ERSSTv5): field-rollout vs. direct Niño-3.4 forecasts")
-    fig.tight_layout()
-    fig.subplots_adjust(bottom=0.30, top=0.86)
-    pdf, _ = save_figure_pair(fig, out_dir / "enso_delay_prediction_skill.pdf")
-    plt.close(fig)
+    with publication_style():
+        fig, axes = make_figure(LAYOUT_SKILL_1x3)
+        field_ax, rmse_ax, acc_ax = axes[0, 0], axes[0, 1], axes[0, 2]
+        for name, kw in DELAY_METHOD_STYLE.items():
+            m = metrics[name]
+            rmse = (np.full_like(m["nino34_rmse"],
+                                 float(np.mean(m["nino34_rmse"])))
+                    if name == "climatology" else m["nino34_rmse"])
+            if np.isfinite(m["rel_l2"]).any():      # index-only methods skip
+                draw_curve(field_ax, leads, m["rel_l2"], kw, with_label=False)
+            draw_curve(rmse_ax, leads, rmse, kw, with_label=True)
+            draw_curve(acc_ax, leads, m["nino34_acc"], kw, with_label=False)
+
+        style_axis(field_ax, xlabel="Lead (months)",
+                   ylabel="Field relative $L^2$",
+                   title="Indo-Pacific field error", grid=True)
+        style_axis(rmse_ax, xlabel="Lead (months)", ylabel="RMSE (°C)",
+                   title="Niño-3.4 error", grid=True)
+        style_axis(acc_ax, xlabel="Lead (months)",
+                   ylabel="Anomaly correlation", title="Niño-3.4 skill",
+                   grid=True)
+        for level in (0.5, 0.6):
+            acc_ax.axhline(level, color=GRID_COLOR, linestyle=":",
+                           linewidth=LINEWIDTH["reference"], zorder=0)
+        acc_ax.set_ylim(-0.2, 1.02)
+        for ax in (field_ax, rmse_ax, acc_ax):
+            ax.set_xlim(1, horizon)
+            ax.set_xticks(leads[1::2])
+
+        add_figure_title(
+            fig, f"ENSO prediction with a {HISTORY}-month delay embedding "
+                 "(ERSSTv5)", y=LAYOUT_SKILL_1x3["title_y"])
+        add_legend(fig, *rmse_ax.get_legend_handles_labels(),
+                   loc=LAYOUT_SKILL_1x3["legend_loc"],
+                   bbox_to_anchor=LAYOUT_SKILL_1x3["legend_bbox"],
+                   ncol=LAYOUT_SKILL_1x3["legend_ncol"])
+        pdf, _ = save_publication_pair(
+            fig, out_dir / "enso_delay_prediction_skill.pdf")
+        plt.close(fig)
     return pdf
 
 
