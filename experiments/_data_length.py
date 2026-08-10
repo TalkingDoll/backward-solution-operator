@@ -7,10 +7,26 @@ transition pairs ``N``, how does forecast skill scale, and can each method even
 
 Methods, all sharing one dictionary Psi so the comparison is exact:
 
-* **BSO** -- ``edmd_bso_method.run_bso_pipeline``. The Galerkin matrix ``K`` is
-  formed from the neural operator's action on Psi over the data-independent
-  quadrature ``(basis_coords, weights)``. ``K`` is therefore ``M x M`` at every
-  ``N``, including ``N < M``.
+* **BSO** -- ``edmd_bso_method.run_bso_pipeline`` supplies the dictionary Psi;
+  ``run_sweep(bso_source=...)`` chooses where the Galerkin matrix ``K`` comes
+  from. Either way ``K`` is ``M x M`` at every ``N``, including ``N < M``,
+  because neither route needs more than the ``N`` observed states.
+
+  ``"quadrature"`` (the default, used by ENSO and EEG)
+      ``K`` is formed from the operator's action on Psi over the
+      data-independent quadrature ``(basis_coords, weights)`` -- the operator is
+      evaluated at the basis functions themselves. This is the textbook Galerkin
+      projection wherever ``basis_coords`` are *state* coordinates, as for OU and
+      the triple well: there the Psi_i genuinely are observables of the state.
+  ``"ensemble"`` (used by Lorenz-96)
+      ``K`` is the same weighted least squares, fit over states the operator
+      generates from the observed ones (:func:`operator_ensemble`). Where
+      ``basis_coords`` are *spatial* -- the Lorenz site ring, where the state is
+      the whole field -- Psi is a function of position, so probing the operator
+      at the basis functions evaluates it far from any state the system visits.
+      Fitting over the ensemble instead cuts one-step error by 16-44% and makes
+      the construction match ``exp_lorenz96.build_bso_model``, which fits over
+      observed states advanced by the frozen operator.
 * **Data EDMD (M)** -- the same Psi, transition fit from the ``N`` observed
   pairs projected onto Psi. Needs ``N >= M`` for a full-rank fit, so it is
   reported only where feasible (NaN otherwise).
@@ -29,6 +45,7 @@ here -- everything scientific comes from ``edmd_bso_method``.
 
 from __future__ import annotations
 
+import math
 import re
 import warnings
 from dataclasses import dataclass
@@ -210,6 +227,54 @@ def fno_rollout(result, kind: str, u0: np.ndarray, horizon: int) -> np.ndarray:
     return np.stack(out)
 
 
+def operator_ensemble(result, kind: str, seed_states: np.ndarray,
+                      weights: np.ndarray, *, seed: int,
+                      target_seeds: int = 256, sigma: float = 0.1,
+                      depth: int = 2,
+                      rms_bounds: tuple[float, float] = (0.5, 1.5)
+                      ) -> np.ndarray:
+    """States on which to probe the operator: the observed ones, spread out.
+
+    The Galerkin fit needs states, and at small ``N`` there are not enough of
+    them. Each default here was measured rather than guessed, on Lorenz-96 with
+    ``M = 40``:
+
+    ``target_seeds``/``sigma``
+        the ``N`` observed states are padded with Gaussian perturbations until
+        there are at least ``target_seeds``. Without this, ``N = 10`` leaves far
+        fewer states than the 40 dictionary coordinates and the fit is
+        under-determined.
+    ``depth``
+        only two operator steps. Rolling further is how
+        ``exp_lorenz96_data_length_matched._fno_ensemble`` reaches its target
+        count (``ceil(512/N)``, so 52 steps at ``N = 10``), but an operator
+        trained on 10 pairs is unstable under autoregression: the ensemble's
+        weighted RMS climbs from 1.04 to 11.16 over those steps and the
+        resulting fit is worse than no ensemble at all. Two steps hold it at
+        1.0.
+    ``rms_bounds``
+        drop diverged states. The attractor's weighted RMS is 1.000, so states
+        outside [0.5, 1.5] are rollout artefacts, not dynamics.
+
+    ``seed`` makes the perturbations reproducible per ``(N, seed)`` cell.
+    """
+    seed_states = np.asarray(seed_states, dtype=np.float64)
+    if seed_states.ndim != 2:
+        raise ValueError(f"seed_states must be (n, p), got {seed_states.shape}")
+    rng = np.random.default_rng(int(seed))
+    repeats = max(1, math.ceil(int(target_seeds) / max(len(seed_states), 1)))
+    padded = np.concatenate(
+        [seed_states]
+        + [seed_states + float(sigma) * rng.standard_normal(seed_states.shape)
+           for _ in range(repeats)])
+    states = np.concatenate(
+        [padded, *fno_rollout(result, kind, padded, int(depth))])
+    states = states[np.isfinite(states).all(axis=1)]
+    rms = np.sqrt(np.sum(np.asarray(weights)[None] * states ** 2, axis=1))
+    low, high = rms_bounds
+    return states[(rms > float(low)) & (rms < float(high))]
+
+
 def _rel_l2_by_lead(pred: np.ndarray, truth: np.ndarray,
                     weights: np.ndarray) -> np.ndarray:
     """Weighted relative-L2 per (lead, origin) from (horizon, n, p) arrays."""
@@ -258,8 +323,15 @@ def run_sweep(
     checkpoint_root: Path | None,
     reg_alpha: float,
     threshold: float = VALID_TIME_THRESHOLD,
+    bso_source: str = "quadrature",
 ) -> DataLengthResult:
     """Train BSO and score all methods over the (length, seed) grid.
+
+    ``bso_source`` selects where the BSO's Galerkin matrix comes from; see the
+    module docstring. ``"quadrature"`` keeps ``run_bso_pipeline``'s own ``K``,
+    which is what the ENSO and EEG drivers use. ``"ensemble"`` refits it over
+    operator-generated states, which is correct where ``basis_coords`` are
+    spatial rather than state coordinates.
 
     ``make_dataset_n(N, seed)`` returns a dataset dict whose ``u0/uT/u2T`` are
     the first ``N`` training pairs (the measure ``basis_coords/weights`` are
@@ -268,6 +340,9 @@ def run_sweep(
     p)``: consecutive held-out states from each forecast origin. One-step skill
     uses leads 0->1; valid-prediction-time uses the full horizon ``H``.
     """
+    if bso_source not in ("quadrature", "ensemble"):
+        raise ValueError("bso_source must be 'quadrature' or 'ensemble', got "
+                         f"{bso_source!r}")
     test_traj = np.asarray(test_traj, dtype=np.float64)
     test_traj = test_traj.reshape(test_traj.shape[0], test_traj.shape[1], -1)
     test_u0 = test_traj[:, 0]
@@ -299,11 +374,21 @@ def run_sweep(
             psi = np.asarray(result.psi, dtype=np.float64)
             step_time = float(result.T)
 
+            if bso_source == "quadrature":
+                k_bso = np.asarray(result.K, dtype=np.float64)
+            else:
+                # Same dictionary, same least squares -- only the states the
+                # operator is probed at change, from the basis functions to
+                # points the system actually visits.
+                ens = operator_ensemble(result, kind, u0_flat, weights,
+                                        seed=int(seed))
+                k_bso = fit_projected_edmd(
+                    psi, weights, ens, fno_rollout(result, kind, ens, 1)[0],
+                    target_M, reg_alpha)
             rollouts = {
                 "fno": fno_rollout(result, kind, test_u0, horizon),
-                "bno": dictionary_rollout(
-                    psi, np.asarray(result.K, dtype=np.float64), weights,
-                    test_u0, horizon),
+                "bno": dictionary_rollout(psi, k_bso, weights, test_u0,
+                                          horizon),
             }
             if n_pairs >= target_M:
                 k_data = fit_projected_edmd(

@@ -20,7 +20,7 @@ cross-validation instead of left at a default. It exists so that a comparison
 against a linear baseline measures the hypothesis class rather than how well
 each side happened to be regularised.
 
-Two facts about the paper's construction that are easy to get wrong, both
+Three facts about the paper's construction that are easy to get wrong, all
 checked by tests:
 
 * **The Eq. 7 index readout is not an independent modelling choice.** Their
@@ -28,12 +28,34 @@ checked by tests:
   area-averaging over the Niño box, because Niño-3.4 is a linear functional of
   the field. A "direct LIM" therefore cannot differ from a propagated LIM by
   readout alone.
-* **Whitening does not change the forecast.** Rescaling ``psi -> D psi`` by a
-  diagonal ``D`` sends ``G -> D G D^-1`` and ``z -> D^-1 z``, so ``z^T G^n psi``
-  is invariant. Whitening is kept because Eq. 7 assumes it (with unit-variance
-  PCs the covariance ``<psi_l y>`` *is* the regression coefficient), not because
-  it alters predictions. The substantive differences from a lag-1 iterated LIM
-  are ``tau0 = 2`` and the fractional powers.
+* **Whitening does not change the forecast, but centring does.** Rescaling
+  ``psi -> D psi`` by a diagonal ``D`` sends ``G -> D G D^-1`` and
+  ``z -> D^-1 z``, so ``z^T G^n psi`` is invariant. Whitening is kept because
+  Eq. 7 assumes it (with unit-variance PCs the covariance ``<psi_l y>`` *is* the
+  regression coefficient), not because it alters predictions. Subtracting the
+  mean is a different matter: ``<psi_l y>`` is a covariance only once *both*
+  factors are centred, and there is no intercept in Eq. 7 to absorb a nonzero
+  ``<y>``. ``encode`` projects raw anomalies without removing the mean that
+  ``fit_eofs`` subtracted before its SVD, so on this record the PC mean carries
+  a third of the signal and an uncentred Eq. 7 readout is badly wrong -- at
+  ``tau = 0``, where there is no propagation error at all, it scores 0.897 °C
+  RMSE against the 0.056 °C reached by ordinary least squares on the same 20
+  features. Centred, it reaches 0.0556 °C.
+* **The forecast must decay to the climatology the index is defined against.**
+  Niño-3.4 is already an anomaly, against a base period much warmer than the
+  full fitting record, so the record mean is *not* zero (-0.387 °C here). The
+  propagator is therefore fitted on centred whitened PCs but applied to
+  uncentred ones, with no intercept added back, so ``G(tau) -> 0`` sends the
+  forecast to zero anomaly rather than to the record mean. Verified equal to
+  Eq. 9's decode-and-area-average form to 4e-14, which is what makes this the
+  faithful reading rather than a convenience: Eq. 9 proves the two are the same
+  object, and the decode form needs no fitted intercept in the first place.
+
+The substantive differences from a lag-1 iterated LIM remain ``tau0 = 2`` and
+the fractional powers. ``exp_enso.fit_lim`` (the ``lim_prop`` baseline) is left
+uncentred on purpose: the record mean is a near-fixed-point of its ``G`` (2 %
+residual), so centring would change only its asymptote, and its
+decode-and-area-average readout already reverts to zero anomaly.
 """
 
 from __future__ import annotations
@@ -52,12 +74,22 @@ def _ridge_solve(x: np.ndarray, y: np.ndarray, ridge: float) -> np.ndarray:
 
 @dataclass
 class WangLIM:
-    """Paper-faithful LIM: whitened PCs, ``G(tau0)``, fractional powers."""
+    """Paper-faithful LIM: whitened PCs, ``G(tau0)``, fractional powers.
+
+    ``pc_mean`` and ``index_mean`` are the training means the fit was centred on.
+    Neither enters a forecast -- the forecast propagates *uncentred* whitened PCs
+    so it decays to zero anomaly -- but they are kept because their consistency is
+    the sharpest available check on the readout: Eq. 9 implies
+    ``(pc_mean / pc_scale) @ readout == index_mean``, which holds to 0.6 % on the
+    ENSO record and is violated grossly by an uncentred fit.
+    """
 
     propagator: np.ndarray        # G(tau0), acting on whitened PCs
-    readout: np.ndarray           # z_l of Eq. 7
+    readout: np.ndarray           # z_l of Eq. 7, a genuine covariance
     pc_scale: np.ndarray          # whitening factors (training PC std)
     tau0: int
+    pc_mean: np.ndarray           # training PC mean, for the Eq. 9 check
+    index_mean: float             # training index mean, likewise
 
     def _power(self, lead: int) -> np.ndarray:
         """``G(tau) = G(tau0)^(tau/tau0)`` (Eq. 12).
@@ -82,7 +114,12 @@ class WangLIM:
         return g
 
     def index_forecast(self, coeff0: np.ndarray, horizon: int) -> np.ndarray:
-        """``(n_origins, horizon)`` Niño-3.4 predictions via Eq. 7."""
+        """``(n_origins, horizon)`` Niño-3.4 predictions via Eq. 7.
+
+        The whitened PC is *not* re-centred and no intercept is added, so as
+        ``G(tau)`` decays the forecast goes to zero anomaly -- the climatology
+        Niño-3.4 is defined against -- rather than to the fitting record's mean.
+        """
         psi = np.asarray(coeff0, dtype=np.float64) / self.pc_scale
         return np.stack([(psi @ self._power(lead).T) @ self.readout
                          for lead in range(1, int(horizon) + 1)], axis=1)
@@ -92,7 +129,8 @@ class WangLIM:
         """``(n_origins, horizon, L)`` EOF coefficients, for the field panel.
 
         Equation 9: decoding these and area-averaging reproduces
-        ``index_forecast`` exactly.
+        ``index_forecast`` exactly. Same convention as
+        :meth:`index_forecast` -- uncentred in, nothing added back.
         """
         psi = np.asarray(coeff0, dtype=np.float64) / self.pc_scale
         return np.stack([(psi @ self._power(lead).T) * self.pc_scale
@@ -104,18 +142,27 @@ def fit_lim_wang(coeff: np.ndarray, index: np.ndarray, tau0: int = 2,
     """Fit the benchmark LIM of Wang et al. (2020) on training coefficients.
 
     ``coeff`` are EOF coefficients over the training period and ``index`` the
-    matching Niño-3.4 values. ``tau0 = 1`` reduces this to a lag-1 iterated LIM.
+    matching Niño-3.4 values. ``tau0 = 1`` reduces this to a lag-1 iterated LIM
+    *on centred coefficients*; it does not reduce to ``exp_enso.fit_lim``, which
+    is deliberately uncentred (see the module docstring).
+
+    The propagator and the readout are both estimated on **centred** whitened
+    PCs, because Eq. 7's ``<psi_l y>`` is the regression coefficient it is meant
+    to be only when both factors have zero mean. The forecast then propagates
+    uncentred PCs so it decays to zero anomaly.
     """
     coeff = np.asarray(coeff, dtype=np.float64)
     index = np.asarray(index, dtype=np.float64)
     tau0 = int(tau0)
+    pc_mean = coeff.mean(axis=0)
     scale = coeff.std(axis=0)
     scale = np.where(scale > 1e-12, scale, 1.0)      # Eq. 6 whitening
-    psi = coeff / scale
-    g_t = _ridge_solve(psi[:-tau0], psi[tau0:], ridge)   # Eq. 11
-    readout = (psi * index[:, None]).mean(axis=0)        # Eq. 7
+    psi = (coeff - pc_mean) / scale
+    index_mean = float(index.mean())
+    g_t = _ridge_solve(psi[:-tau0], psi[tau0:], ridge)          # Eq. 11
+    readout = (psi * (index - index_mean)[:, None]).mean(axis=0)  # Eq. 7
     return WangLIM(propagator=g_t.T, readout=readout, pc_scale=scale,
-                   tau0=tau0)
+                   tau0=tau0, pc_mean=pc_mean, index_mean=index_mean)
 
 
 def fit_lim_direct(predictors: np.ndarray, index: np.ndarray,

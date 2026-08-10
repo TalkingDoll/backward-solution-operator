@@ -61,7 +61,18 @@ def decode(patterns, coeff):
 
 
 def fit_lim(coeff, ridge=1e-6):
-    """Lag-1 EOF-space propagator: c_{t+1} ~= c_t @ G^T."""
+    """Lag-1 EOF-space propagator: c_{t+1} ~= c_t @ G^T.
+
+    Deliberately **uncentred**, unlike ``enso_lim.fit_lim_wang``, which must
+    centre because Eq. 7's readout is a covariance. Two reasons it is safe here:
+    the training mean is a near-fixed-point of the fitted ``G`` (2 % relative
+    residual on the ERSSTv5 record), so centring would barely move the propagator;
+    and the Niño-3.4 readout is the exact decode-and-area-average rather than a
+    regression, so a decaying forecast already goes to zero anomaly -- the
+    climatology the anomalies are defined against -- with no intercept to get
+    wrong. Centring instead would make it revert to the record mean and introduce
+    a cold bias of a few tenths of a degree at long lead.
+    """
     x, y = coeff[:-1], coeff[1:]
     gram = x.T @ x
     reg = ridge * np.trace(gram) / gram.shape[0]

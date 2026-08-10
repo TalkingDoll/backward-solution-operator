@@ -1,9 +1,33 @@
+import inspect
+
 import pytest
 import numpy as np
+from torch import nn
 
 from experiments._data_length import (_coordinates, _one_step, _valid_time,
                                        dictionary_rollout, fit_projected_edmd,
-                                       gram_diagnostics)
+                                       gram_diagnostics, operator_ensemble,
+                                       run_sweep)
+
+
+class _Identity(nn.Module):
+    def forward(self, fields, grid):
+        return fields
+
+
+class _Blowup(nn.Module):
+    """Multiplies by 10 each step, so rolled states leave the RMS band."""
+
+    def forward(self, fields, grid):
+        return fields * 10.0
+
+
+class _Result:
+    """The two attributes ``fno_rollout`` reads off a ``BSOResult``."""
+
+    def __init__(self, model, p):
+        self.operator_pure = model
+        self.grid = np.linspace(0.0, 1.0, p, endpoint=False)
 
 
 def _orthonormal_setup(M):
@@ -131,3 +155,68 @@ def test_valid_time_is_the_first_lead_exceeding_the_threshold():
     np.testing.assert_allclose(vt, [4.0, 2.0])     # origin0 exceeds at lead 2
     never = np.full((3, 1), 0.1)
     np.testing.assert_allclose(_valid_time(never, 1.5, 0.5), [4.5])
+
+
+def _unit_states(n, p, rng):
+    """States on the weighted unit sphere, matching an attractor RMS of 1."""
+    x = rng.normal(size=(n, p))
+    return x / np.sqrt(np.mean(x ** 2, axis=1, keepdims=True))
+
+
+def test_operator_ensemble_pads_small_n_to_the_seed_target():
+    p, n_obs, depth, target = 8, 3, 2, 256
+    rng = np.random.default_rng(0)
+    result = _Result(_Identity(), p)
+    ens = operator_ensemble(result, "sensor1d", _unit_states(n_obs, p, rng),
+                            np.full(p, 1.0 / p), seed=7, sigma=0.0,
+                            target_seeds=target, depth=depth)
+    # 3 observed states padded by ceil(256/3)=86 noise-free copies, then rolled
+    # `depth` times under the identity: every state survives the RMS filter.
+    assert len(ens) == n_obs * (1 + 86) * (1 + depth)
+
+
+def test_operator_ensemble_is_reproducible_per_seed():
+    p = 8
+    seeds = _unit_states(4, p, np.random.default_rng(1))
+    w = np.full(p, 1.0 / p)
+    kw = dict(seed=2026, target_seeds=32, depth=1)
+    a = operator_ensemble(_Result(_Identity(), p), "sensor1d", seeds, w, **kw)
+    b = operator_ensemble(_Result(_Identity(), p), "sensor1d", seeds, w, **kw)
+    np.testing.assert_array_equal(a, b)
+    kw["seed"] = 2027
+    assert not np.array_equal(a, operator_ensemble(
+        _Result(_Identity(), p), "sensor1d", seeds, w, **kw))
+
+
+def test_operator_ensemble_drops_diverged_states():
+    """A blowing-up operator contributes nothing past the RMS band."""
+    p, n_obs = 8, 4
+    seeds = _unit_states(n_obs, p, np.random.default_rng(2))
+    ens = operator_ensemble(_Result(_Blowup(), p), "sensor1d", seeds,
+                            np.full(p, 1.0 / p), seed=0, sigma=0.0,
+                            target_seeds=n_obs, depth=3)
+    # seeds have RMS 1; every rolled state is at 10, 100, 1000 -- all rejected.
+    rms = np.sqrt(np.sum(np.full(p, 1.0 / p)[None] * ens ** 2, axis=1))
+    assert np.all(rms < 1.5)
+    assert len(ens) == n_obs * 2          # the seeds and their one copy
+
+
+def test_operator_ensemble_rejects_non_2d_seed_states():
+    with pytest.raises(ValueError, match="must be"):
+        operator_ensemble(_Result(_Identity(), 4), "sensor1d",
+                          np.zeros(4), np.full(4, 0.25), seed=0)
+
+
+def test_run_sweep_defaults_to_the_quadrature_bso():
+    """ENSO and EEG share run_sweep; the ensemble path must be opt-in."""
+    assert (inspect.signature(run_sweep).parameters["bso_source"].default
+            == "quadrature")
+
+
+def test_run_sweep_rejects_an_unknown_bso_source():
+    with pytest.raises(ValueError, match="bso_source"):
+        run_sweep(system="x", make_dataset_n=lambda n, s: {},
+                  test_traj=np.zeros((1, 2, 3)), weights=np.ones(3),
+                  kind="sensor1d", cfg_builder=lambda n, s: {}, target_M=3,
+                  lengths=(1,), seeds=(0,), checkpoint_root=None,
+                  reg_alpha=1e-4, bso_source="quadratute")

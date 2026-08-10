@@ -113,12 +113,18 @@ def main() -> None:
 
     ckpt_root = (None if args.quick
                  else RESULTS_DIR / "l96_data_length" / "checkpoints")
+    # ``basis_coords`` here is the site ring, so Psi is a function of position
+    # and probing the operator at the basis functions evaluates it nowhere near
+    # the attractor. Fitting K over operator-generated states instead matches
+    # ``exp_lorenz96.build_bso_model``, which fits over the observed states
+    # advanced by the frozen FNO.
     result = run_sweep(
         system=SYSTEM, make_dataset_n=make_dataset_n, test_traj=test_traj,
         weights=np.asarray(dataset["weights"], dtype=np.float64),
         kind=str(dataset["kind"]), cfg_builder=cfg_builder,
         target_M=TARGET_M, lengths=lengths, seeds=seeds,
-        checkpoint_root=ckpt_root, reg_alpha=REG_ALPHA)
+        checkpoint_root=ckpt_root, reg_alpha=REG_ALPHA,
+        bso_source="ensemble")
 
     out_results = RESULTS_DIR / "l96_data_length"
     out_figures = FIGURES_DIR / "lorenz96"

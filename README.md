@@ -51,11 +51,21 @@ dictionary over a data-independent measure, so it is defined even when the
 number of observed training pairs `N < M`; a plain data EDMD (fit from the `N`
 observed pairs) is not.
 
-The exception is `exp_lorenz96_data_length_matched`, which matches the
-`l96_prediction` construction instead: it builds its own polynomial-dictionary
-BSO and calls `run_bso_pipeline` only to train and cache the FNO, discarding
-the pipeline's dictionary and Galerkin matrix. Its `N < M` coverage comes from
-an FNO-generated ensemble rather than from a data-independent measure.
+Two drivers depart from that measure, both because their `basis_coords` are
+*spatial* rather than state coordinates — on the Lorenz site ring the
+dictionary is a function of position, so evaluating the operator at the basis
+functions probes it far from any state the system visits:
+
+- `exp_lorenz96_data_length` keeps the pipeline's dictionary but fits its
+  Galerkin matrix over operator-generated states (`run_sweep(bso_source=
+  "ensemble")`), which cuts one-step error by 16–44%.
+- `exp_lorenz96_data_length_matched` matches the `l96_prediction` construction
+  outright: it builds its own polynomial-dictionary BSO and calls
+  `run_bso_pipeline` only to train and cache the FNO, discarding the pipeline's
+  dictionary and Galerkin matrix.
+
+Both still cover `N < M`, taking it from an FNO-generated ensemble rather than
+from the data-independent measure.
 
 | Command | Experiment |
 |---|---|

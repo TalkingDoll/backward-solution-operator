@@ -130,11 +130,18 @@ def test_wang_lim_at_tau0_one_reduces_to_the_lag1_iterated_lim():
     Whitening (Wang Eq. 6) is a similarity transform on the propagator and a
     matching rescale of the readout, so it cannot change a forecast; at
     ``tau0 = 1`` the paper's LIM must therefore coincide with the lag-1 model.
+
+    The coefficients are centred first because that is the regime the equivalence
+    holds in: ``fit_lim_wang`` estimates its propagator on centred PCs (Eq. 7 is a
+    covariance only then) while ``exp_enso.fit_lim`` is deliberately left
+    uncentred, so on data with a nonzero mean the two propagators are genuinely
+    different objects and comparing them would test nothing.
     """
     from experiments.enso.enso_lim import fit_lim_wang
     from experiments.enso.exp_enso import fit_lim
     rng = np.random.default_rng(0)
     coeff = rng.normal(size=(300, 6))
+    coeff -= coeff.mean(axis=0)
     index = 0.8 * coeff[:, 0] + 0.2 * rng.normal(size=300)
     wang = fit_lim_wang(coeff, index, tau0=1, ridge=1e-10)
     G = fit_lim(coeff, ridge=1e-10)
@@ -187,6 +194,70 @@ def test_wang_lim_rejects_a_genuinely_complex_fractional_power():
     wang = fit_lim_wang(coeff, index, tau0=2)
     with pytest.raises(np.linalg.LinAlgError, match="complex"):
         wang.index_forecast(coeff[:3], 1)   # lead 1 needs the square root
+
+
+def _uncorrelated_coefficients(n=400, seed=5):
+    """Columns that are exactly zero-mean and mutually orthogonal, times scales.
+
+    Eq. 7's readout equals the least-squares coefficient only when the whitened
+    PCs have identity covariance. Real EOF coefficients do, by construction of the
+    SVD; ``rng.normal`` does not, so a test that checks the readout *against*
+    least squares has to build the orthogonality in rather than assume it. The
+    constant column is included in the QR and then dropped, which is what forces
+    the remaining columns to have exactly zero mean.
+    """
+    rng = np.random.default_rng(seed)
+    q, _ = np.linalg.qr(np.column_stack([np.ones(n), rng.normal(size=(n, 6))]))
+    return q[:, 1:] * np.array([3.0, 2.0, 1.5, 1.0, 0.8, 0.5]) * np.sqrt(n)
+
+
+def test_wang_readout_is_a_covariance_despite_a_large_mean_offset():
+    """Eq. 7 is the regression coefficient only once both factors are centred.
+
+    ``encode`` projects raw anomalies without removing the mean ``fit_eofs``
+    subtracted before its SVD, so on the ENSO record the PC mean carries a third
+    of the signal and there is no intercept in Eq. 7 to absorb a nonzero ``<y>``.
+    An uncentred readout scored 0.897 °C at ``tau = 0`` -- climatology level --
+    against the 0.056 °C reached by least squares on the same features.
+    """
+    from experiments.enso.enso_lim import fit_lim_wang
+    centred = _uncorrelated_coefficients()
+    offset = np.array([5.0, -3.0, 2.0, 0.0, 1.0, -1.0])
+    slopes = np.array([0.7, -0.4, 0.3, 0.1, -0.2, 0.05])
+    coeff = centred + offset
+    # An exact linear functional of the coefficients, carrying no constant --
+    # which is what Niño-3.4 is of the SST field (Wang Eq. 9).
+    index = coeff @ slopes
+
+    wang = fit_lim_wang(coeff, index, tau0=1, ridge=0.0)
+    np.testing.assert_allclose(wang.pc_mean, offset, atol=1e-10)
+    # The readout reproduces the centred index exactly, i.e. it is least squares.
+    psi = (coeff - wang.pc_mean) / wang.pc_scale
+    np.testing.assert_allclose(psi @ wang.readout, index - wang.index_mean,
+                               atol=1e-10)
+    # Eq. 9 self-consistency: the readout applied to the mean PC must give the
+    # mean index. Exact here because the index carries no constant term; on the
+    # ENSO record it holds to 0.6 %, and the uncentred readout this replaced
+    # violated it outright.
+    np.testing.assert_allclose((wang.pc_mean / wang.pc_scale) @ wang.readout,
+                               wang.index_mean, atol=1e-10)
+
+
+def test_wang_forecast_decays_to_zero_anomaly_not_the_record_mean():
+    """The asymptote must be the climatology the index is defined against.
+
+    Niño-3.4 is an anomaly against a base period much warmer than the full
+    fitting record, so the record mean is not zero. A forecast that reverts to it
+    carries a cold bias -- measured at -0.4 to -0.5 °C past lead 9, enough to
+    reverse an RMSE ranking on its own.
+    """
+    from experiments.enso.enso_lim import fit_lim_wang
+    coeff = _damped_oscillator(n=600) + 4.0      # a large record-mean offset
+    index = 0.8 * coeff[:, 0] + 0.2 * coeff[:, 1]
+    wang = fit_lim_wang(coeff, index, tau0=2, ridge=0.0)
+    assert abs(wang.index_mean) > 1.0            # the offset is really present
+    far = wang.index_forecast(coeff[:8], 120)[:, -1]
+    assert np.abs(far).max() < 0.05 * abs(wang.index_mean)
 
 
 def test_direct_lagged_lim_is_plain_least_squares_per_lead():
@@ -303,11 +374,19 @@ def test_index_delay_state_is_chronological_and_newest_is_instantaneous():
     assert states.shape == (40, 12)
     # Rows without a full 12-month history stay NaN rather than being padded.
     assert np.isnan(states[:11]).all() and np.isfinite(states[11:]).all()
-    np.testing.assert_allclose(states[20, -1], (index[20] - mean) / scale)
+    np.testing.assert_allclose(states[20, -1], index[20] / scale)
     assert np.all(np.diff(states[20]) > 0)          # oldest first, newest last
-    # Standardisation uses training months only.
+    # Scaling uses training months only.
     np.testing.assert_allclose(mean, index[:30].mean())
     np.testing.assert_allclose(scale, index[:30].std())
+    # The state is scaled but NOT centred, and ``mean`` is reported rather than
+    # applied. This is what makes a zero anomaly map to a zero state, so an
+    # operator that decays predicts zero anomaly instead of the fitting record's
+    # mean -- pinned here because re-centring would silently reintroduce a
+    # long-lead cold bias of several tenths of a degree in the propagated rung.
+    assert mean != 0.0
+    zero = index_delay_states(np.zeros(40), train_end=30, history=12)[0]
+    np.testing.assert_allclose(zero[11:], 0.0)
 
 
 def test_index_bso_training_pairs_stay_before_the_training_cutoff():
@@ -372,6 +451,37 @@ def test_pca_state_rank_is_capped_and_rejects_an_empty_training_window():
     assert pca_state(delay, train_end=10, rank=99).shape[1] == 4
     with pytest.raises(ValueError, match="train_end"):
         pca_state(delay, train_end=0, rank=2)
+
+
+def test_pca_state_uncentred_sends_a_zero_anomaly_to_a_zero_state():
+    """``center=False`` keeps the basis but drops the offset.
+
+    The basis is still fitted on centred rows -- that is what makes it a PCA --
+    but the score of a zero delay vector is then zero, so a state driven to the
+    origin by a decaying operator decodes back to zero anomaly instead of to the
+    fitting record's mean. On a field that is already an anomaly, against a base
+    period differing from the fitting record, that is a long-lead bias of several
+    tenths of a degree.
+    """
+    from experiments.enso.enso_data import pca_basis, pca_state
+    rng = np.random.default_rng(7)
+    delay = rng.normal(size=(80, 10)) + 5.0
+    delay[:3] = np.nan                      # no full history, as delay_state marks
+    mean, components = pca_basis(delay, 60, 4)
+
+    centred = pca_state(delay, train_end=60, rank=4)
+    raw = pca_state(delay, train_end=60, rank=4, center=False)
+    # Same basis either way; only the offset differs.
+    np.testing.assert_allclose(raw[5], delay[5] @ components.T)
+    np.testing.assert_allclose(centred[5], (delay[5] - mean) @ components.T)
+    assert np.isnan(raw[:3]).all() and np.isfinite(raw[3:]).all()
+    assert np.abs(mean).min() > 1e-6        # the offset is really present
+
+    zeroed = delay.copy()
+    zeroed[40] = 0.0
+    np.testing.assert_allclose(
+        pca_state(zeroed, train_end=60, rank=4, center=False)[40], 0.0,
+        atol=1e-12)
 
 
 def test_direct_cv_folds_are_contiguous_and_stay_inside_the_origins():

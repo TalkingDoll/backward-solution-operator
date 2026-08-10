@@ -196,7 +196,8 @@ def pca_basis(delay: np.ndarray, train_end: int,
     return mean, vt[:min(int(rank), vt.shape[0])]
 
 
-def pca_state(delay: np.ndarray, train_end: int, rank: int) -> np.ndarray:
+def pca_state(delay: np.ndarray, train_end: int, rank: int, *,
+              center: bool = True) -> np.ndarray:
     """Training-fit PCA scores of a delay embedding, NaN rows preserved.
 
     A delay embedding's leading rows are NaN because they have no full history.
@@ -209,12 +210,23 @@ def pca_state(delay: np.ndarray, train_end: int, rank: int) -> np.ndarray:
     experiments' state construction match as well as their dictionaries do, and
     :func:`pca_inverse` is the counterpart that lets a propagated state be read
     back out the way ``eeg_operator_bso.rollout_operator_bso`` does.
+
+    ``center=False`` projects as ``delay @ components.T``, leaving the mean in.
+    The basis is still fitted on centred rows -- that is what makes it a PCA --
+    but the *score* of a zero delay vector is then zero, so a state driven to the
+    origin by a decaying operator decodes back to zero anomaly instead of to the
+    fitting record's mean. On a field that is already an anomaly, against a base
+    period differing from the fitting record, that distinction is a bias of a
+    few tenths of a degree at long lead; it is the same choice
+    ``enso_lim.WangLIM`` makes for Eq. 9, and the two must agree for a forecast
+    and its baseline to be compared on error rather than on offset.
     """
     delay = np.asarray(delay, dtype=np.float64)
     complete = np.all(np.isfinite(delay), axis=1)
     mean, components = pca_basis(delay, train_end, rank)
     out = np.full((len(delay), len(components)), np.nan)
-    out[complete] = (delay[complete] - mean) @ components.T
+    offset = mean if center else np.zeros_like(mean)
+    out[complete] = (delay[complete] - offset) @ components.T
     return out
 
 
