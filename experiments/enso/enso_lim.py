@@ -15,6 +15,11 @@ Two estimators are provided, and they are genuinely different objects:
     propagation at all. This is the *linear counterpart of the direct
     field-to-index FNO*, not a LIM.
 
+``fit_direct_cv`` is the same estimator with its ridge selected by blocked
+cross-validation instead of left at a default. It exists so that a comparison
+against a linear baseline measures the hypothesis class rather than how well
+each side happened to be regularised.
+
 Two facts about the paper's construction that are easy to get wrong, both
 checked by tests:
 
@@ -128,6 +133,59 @@ def fit_lim_direct(predictors: np.ndarray, index: np.ndarray,
     x = np.concatenate([np.ones((len(x), 1)), x], axis=1)
     return np.stack([_ridge_solve(x, np.asarray(index)[origins + lead], ridge)
                      for lead in range(1, int(horizon) + 1)])
+
+
+RIDGE_GRID = np.logspace(-8.0, 2.0, 21)
+
+
+def fit_direct_cv(predictors: np.ndarray, index: np.ndarray,
+                  origins: np.ndarray, horizon: int, grid=None,
+                  n_folds: int = 5) -> tuple[np.ndarray, np.ndarray]:
+    """``fit_lim_direct`` with a per-lead ridge chosen by blocked CV.
+
+    Returns ``(weights, ridges)``; ``weights`` has the same shape and meaning as
+    ``fit_lim_direct``'s. Selection uses ``origins`` only, so it stays inside the
+    training period wherever the caller's origins do.
+
+    The folds are **contiguous blocks** of ``origins``, not random subsets.
+    Consecutive months of a geophysical index are strongly autocorrelated, so a
+    random split places near-duplicate rows on both sides of every fold, makes
+    the held-out error look like training error, and selects a ridge far too
+    small. That failure mode is exactly what a fixed default ridge already risks,
+    and it is the reason a high-dimensional predictor set can appear to lose to a
+    low-dimensional one when it has merely been left unregularised.
+
+    Every lead is solved together for a given fold and ridge: the Gram matrix
+    depends only on the predictors, so the cost is ``n_folds * len(grid)``
+    solves rather than one per lead.
+    """
+    origins = np.asarray(origins, dtype=int)
+    grid = RIDGE_GRID if grid is None else np.asarray(grid, dtype=np.float64)
+    x = np.asarray(predictors, dtype=np.float64)
+    y = np.asarray(index, dtype=np.float64)
+    horizon = int(horizon)
+
+    design = np.concatenate([np.ones((len(origins), 1)), x[origins]], axis=1)
+    targets = np.stack([y[origins + lead] for lead in range(1, horizon + 1)],
+                       axis=1)
+
+    errors = np.zeros((len(grid), horizon))
+    for fold in np.array_split(np.arange(len(origins)), int(n_folds)):
+        held = np.zeros(len(origins), dtype=bool)
+        held[fold] = True
+        xt, xe = design[~held], design[held]
+        gram = xt.T @ xt
+        unit = np.trace(gram) / max(gram.shape[0], 1)
+        cross = xt.T @ targets[~held]
+        for i, ridge in enumerate(grid):
+            w = np.linalg.solve(
+                gram + float(ridge) * unit * np.eye(gram.shape[0]), cross)
+            errors[i] += np.sum((xe @ w - targets[held]) ** 2, axis=0)
+
+    ridges = grid[np.argmin(errors, axis=0)]
+    weights = np.stack([_ridge_solve(design, targets[:, lead], ridges[lead])
+                        for lead in range(horizon)])
+    return weights, ridges
 
 
 def predict_lim_direct(weights: np.ndarray,

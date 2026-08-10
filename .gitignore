@@ -2,6 +2,11 @@
 !/data/.gitkeep
 /results/*
 !/results/.gitkeep
+# sweep summaries small enough to track, so the replot entry points work from a
+# clean clone without retraining the operators
+!/results/l96_data_length/
+/results/l96_data_length/*
+!/results/l96_data_length/l96_data_length_results.npz
 /checkpoints/
 /schematic/
 __pycache__/

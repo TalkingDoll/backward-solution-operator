@@ -341,6 +341,185 @@ def test_index_bso_dictionary_has_the_declared_column_layout():
     assert np.ptp(psi[:, 13:], axis=0).min() > 1e-8
 
 
+def test_pca_state_is_training_only_and_keeps_the_nan_convention():
+    """The reduced state must not see a verification month, ever.
+
+    The whole ladder is fitted on this state, so a leak here would flatter every
+    rung at once and be invisible in the comparison between them.
+    """
+    from experiments.enso.enso_data import pca_state
+    from experiments.enso.exp_enso_delay import delay_state
+    rng = np.random.default_rng(11)
+    coeff = rng.normal(size=(80, 5))
+    delay = delay_state(coeff, history=4)
+    clean = pca_state(delay, train_end=60, rank=3)
+
+    assert clean.shape == (80, 3)
+    # Rows without a full history stay NaN rather than being padded to zero.
+    assert np.isnan(clean[:3]).all() and np.isfinite(clean[3:]).all()
+
+    # Corrupting the verification period cannot move the basis, so the
+    # projections of the training rows are unchanged.
+    corrupted = delay.copy()
+    corrupted[60:] = 1e6
+    after = pca_state(corrupted, train_end=60, rank=3)
+    np.testing.assert_allclose(after[3:60], clean[3:60], atol=1e-8)
+
+
+def test_pca_state_rank_is_capped_and_rejects_an_empty_training_window():
+    from experiments.enso.enso_data import pca_state
+    delay = np.arange(60.0).reshape(15, 4)
+    assert pca_state(delay, train_end=10, rank=99).shape[1] == 4
+    with pytest.raises(ValueError, match="train_end"):
+        pca_state(delay, train_end=0, rank=2)
+
+
+def test_direct_cv_folds_are_contiguous_and_stay_inside_the_origins():
+    """Blocked folds, drawn only from `origins`: a random split would leak.
+
+    Neighbouring months are near-duplicates, so a randomly split fold has almost
+    the same rows on both sides and the selected ridge collapses to the smallest
+    value on the grid -- which is exactly the un-tuned behaviour the helper
+    exists to avoid.
+    """
+    from experiments.enso.enso_lim import fit_direct_cv, fit_lim_direct
+    rng = np.random.default_rng(4)
+    x = rng.normal(size=(200, 6))
+    y = 0.6 * x[:, 0] + 0.4 * rng.normal(size=200)
+    origins = np.arange(20, 150)
+
+    # A single-point grid must reproduce the fixed-ridge estimator exactly.
+    weights, ridges = fit_direct_cv(x, y, origins, horizon=3,
+                                    grid=np.array([1e-6]))
+    np.testing.assert_allclose(ridges, 1e-6)
+    np.testing.assert_allclose(
+        weights, fit_lim_direct(x, y, origins, horizon=3, ridge=1e-6),
+        atol=1e-10)
+
+    # Selection uses only `origins`: corrupting everything outside changes
+    # nothing.
+    corrupt = x.copy()
+    corrupt[:20] = 1e6
+    corrupt[153:] = 1e6
+    y_corrupt = y.copy()
+    y_corrupt[:20] = 1e6
+    y_corrupt[153:] = 1e6
+    _, same = fit_direct_cv(corrupt, y_corrupt, origins, horizon=3)
+    _, base = fit_direct_cv(x, y, origins, horizon=3)
+    np.testing.assert_allclose(same, base)
+
+
+def test_direct_cv_beats_the_fixed_default_on_an_overparameterised_design():
+    """The reason the helper exists, stated as held-out error.
+
+    A wide design fitted at the fixed ``ridge=1e-6`` default overfits, and a
+    comparison against such a baseline measures regularisation rather than the
+    hypothesis class. Tuning must both move off the grid floor and actually
+    reduce out-of-sample error.
+    """
+    from experiments.enso.enso_lim import (RIDGE_GRID, fit_direct_cv,
+                                           fit_lim_direct, predict_lim_direct)
+    rng = np.random.default_rng(7)
+    n, p = 260, 60
+    x = rng.normal(size=(n, p))
+    # Weak signal in one column, everything else noise: 60 predictors for 120
+    # fitting rows is exactly the regime the ENSO delay design sits in.
+    y = 0.4 * x[:, 0] + rng.normal(size=n)
+    fit, held = np.arange(0, 120), np.arange(140, 240)
+
+    tuned_w, ridges = fit_direct_cv(x, y, fit, horizon=2)
+    default_w = fit_lim_direct(x, y, fit, horizon=2, ridge=1e-6)
+
+    assert ridges.min() > RIDGE_GRID.min()      # off the grid floor
+    assert ridges.max() <= RIDGE_GRID.max()
+
+    truth = np.stack([y[held + lead] for lead in (1, 2)], axis=1)
+    tuned = np.mean((predict_lim_direct(tuned_w, x[held]) - truth) ** 2)
+    default = np.mean((predict_lim_direct(default_w, x[held]) - truth) ** 2)
+    assert tuned < default
+
+
+def test_propagated_forecast_is_the_eeg_rollout_with_nothing_fitted():
+    """`Psi K^n`, state block out, fixed readout -- the EEG rollout, verbatim.
+
+    The rung's whole point is that no parameter is fitted per lead and none is
+    fitted to the target at all; a fitted readout would score better while
+    quietly reintroducing exactly the per-lead tuning it exists to avoid. The
+    test therefore pins it to matrix powers of `K`.
+    """
+    from experiments.enso.exp_enso_index import propagated_forecast
+    rng = np.random.default_rng(8)
+    state_dim = 4
+    psi = np.concatenate([np.ones((60, 1)), rng.normal(size=(60, 6))], axis=1)
+    K = rng.normal(size=(7, 7)) * 0.2 + np.eye(7)
+    origins = np.arange(40, 55)
+    readout = lambda block: block[:, -1] * 2.0 + 1.0   # fixed, unfitted
+
+    out = propagated_forecast(psi, K, state_dim, readout, origins, horizon=3)
+    assert out.shape == (15, 3)
+    for lead in (1, 2, 3):
+        advanced = psi[origins] @ np.linalg.matrix_power(K, lead)
+        np.testing.assert_allclose(
+            out[:, lead - 1], readout(advanced[:, 1:1 + state_dim]),
+            atol=1e-10)
+    # Only the fixed state coordinates are read back out, never the learned
+    # block -- that is what makes the reconstruction map fixed.
+    assert not np.allclose(out[:, 0], readout(
+        (psi[origins] @ K)[:, 1 + state_dim:1 + 2 * state_dim]))
+
+
+def test_pca_inverse_round_trips_a_full_rank_state():
+    """The propagated rung reconstructs through this map, so it must invert."""
+    from experiments.enso.enso_data import pca_basis, pca_inverse, pca_state
+    rng = np.random.default_rng(12)
+    delay = rng.normal(size=(90, 6))
+    scores = pca_state(delay, train_end=70, rank=6)
+    mean, components = pca_basis(delay, train_end=70, rank=6)
+    np.testing.assert_allclose(pca_inverse(scores, mean, components), delay,
+                               atol=1e-9)
+
+
+def test_block_bootstrap_draws_contiguous_blocks_of_the_right_length():
+    from experiments.enso.exp_enso_index import _block_resamples
+    draws = _block_resamples(n_origins=50, block=10, n_samples=7, seed=0)
+    assert draws.shape == (7, 50)
+    assert draws.min() >= 0 and draws.max() < 50
+    # Every block of `block` consecutive columns is a run of consecutive months.
+    blocks = draws.reshape(7, 5, 10)
+    np.testing.assert_array_equal(np.diff(blocks, axis=2),
+                                  np.ones((7, 5, 9), dtype=int))
+
+
+def test_acc_difference_interval_covers_zero_for_identical_forecasts():
+    """Two identical forecasts differ by exactly zero at every resample."""
+    from experiments.enso.exp_enso_index import acc_difference_interval
+    rng = np.random.default_rng(9)
+    truth = rng.normal(size=(120, 4))
+    pred = truth + 0.5 * rng.normal(size=(120, 4))
+    lower, upper = acc_difference_interval(pred, pred, truth, horizon=4,
+                                           n_samples=200)
+    np.testing.assert_allclose(lower, 0.0, atol=1e-12)
+    np.testing.assert_allclose(upper, 0.0, atol=1e-12)
+
+    # A forecast that is strictly better must give an interval clear of zero.
+    worse = 0.05 * pred + rng.normal(size=(120, 4))
+    lower, _ = acc_difference_interval(pred, worse, truth, horizon=4,
+                                       n_samples=200)
+    assert np.all(lower > 0.0)
+
+
+def test_ladder_rungs_share_one_state_width_so_only_the_method_differs():
+    """The dictionary, its linear control and the MLP take the same input."""
+    from experiments.enso.exp_enso_index import (DICTIONARY_SIZE, DirectMLP,
+                                                 REDUCED_DIM)
+    assert DICTIONARY_SIZE == 1 + REDUCED_DIM + 11
+    mlp = DirectMLP(REDUCED_DIM, horizon=6, hidden_dims=(16, 16))
+    first = next(m for m in mlp.net if hasattr(m, "in_features"))
+    last = [m for m in mlp.net if hasattr(m, "out_features")][-1]
+    assert first.in_features == REDUCED_DIM
+    assert last.out_features == 6
+
+
 def test_index_bso_linear_control_is_per_lead_regression_on_the_delay_state():
     """`bso_direct_linear` is exactly least squares on [1, z], by construction.
 

@@ -15,8 +15,7 @@ import sys
 
 sys.dont_write_bytecode = True
 
-from experiments._data_length import (load_result, plot_two_versions,
-                                       plot_valid_time)
+from experiments._data_length import load_result, plot_two_versions
 from project_paths import FIGURES_DIR, RESULTS_DIR
 
 TITLE_SUFFIX = "(K=40, F=8)"
@@ -32,12 +31,13 @@ def main() -> None:
     out_figures = FIGURES_DIR / "lorenz96"
     written = []
     # Each figure twice: with the 25-75 percentile bands, and medians only.
+    # Valid-prediction-time is deliberately not plotted for Lorenz-96: at
+    # tau=0.02 every method's horizon collapses into {0.00 ... 0.12}, six steps
+    # of resolution, which cannot separate them.
     for bands in (True, False):
         written.extend(plot_two_versions(result, out_figures, "Lorenz-96",
                                          title_suffix=TITLE_SUFFIX,
                                          bands=bands))
-        written.append(plot_valid_time(result, out_figures, "Lorenz-96",
-                                       title_suffix=TITLE_SUFFIX, bands=bands))
     for path in written:
         print(f"[lorenz96:data-length] replotted: {path}")
 

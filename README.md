@@ -44,11 +44,18 @@ documented in [experimental_detail.md](experimental_detail.md).
 
 ## Comparison and increasing-data experiments
 
-These experiments reuse the canonical BNO (`edmd_bso_method.run_bso_pipeline`)
-and add only thin drivers. The BNO forms its `M`-dimensional Galerkin matrix
-from the frozen operator acting on the dictionary over a data-independent
-measure, so it is defined even when the number of observed training pairs
-`N < M`; a plain data EDMD (fit from the `N` observed pairs) is not.
+Most of these experiments reuse the canonical BNO
+(`edmd_bso_method.run_bso_pipeline`) and add only thin drivers. The BNO forms
+its `M`-dimensional Galerkin matrix from the frozen operator acting on the
+dictionary over a data-independent measure, so it is defined even when the
+number of observed training pairs `N < M`; a plain data EDMD (fit from the `N`
+observed pairs) is not.
+
+The exception is `exp_lorenz96_data_length_matched`, which matches the
+`l96_prediction` construction instead: it builds its own polynomial-dictionary
+BSO and calls `run_bso_pipeline` only to train and cache the FNO, discarding
+the pipeline's dictionary and Galerkin matrix. Its `N < M` coverage comes from
+an FNO-generated ensemble rather than from a data-independent measure.
 
 | Command | Experiment |
 |---|---|

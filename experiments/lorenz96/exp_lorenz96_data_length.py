@@ -20,8 +20,7 @@ import numpy as np
 
 sys.dont_write_bytecode = True
 
-from experiments._data_length import (plot_two_versions, plot_valid_time,
-                                       run_sweep, save_result)
+from experiments._data_length import plot_two_versions, run_sweep, save_result
 from kbe_observation_data import generate_kbe_dataset
 from project_paths import FIGURES_DIR, RESULTS_DIR
 
@@ -124,11 +123,13 @@ def main() -> None:
     out_results = RESULTS_DIR / "l96_data_length"
     out_figures = FIGURES_DIR / "lorenz96"
     save_result(result, out_results / "l96_data_length_results.npz")
+    # Valid-prediction-time is not plotted here: at tau=0.02 every method's
+    # horizon collapses into {0.00 ... 0.12}, six steps of resolution, so the
+    # metric cannot separate them. ``plot_valid_time`` is still used by the
+    # ENSO and EEG drivers, whose step sizes give it room.
     pdfs = plot_two_versions(result, out_figures, "Lorenz-96",
                              title_suffix="(K=40, F=8)")
-    vt = plot_valid_time(result, out_figures, "Lorenz-96",
-                         title_suffix="(K=40, F=8)")
-    print(f"[lorenz96:data-length] figures: {[str(p) for p in (*pdfs, vt)]}")
+    print(f"[lorenz96:data-length] figures: {[str(p) for p in pdfs]}")
 
 
 if __name__ == "__main__":

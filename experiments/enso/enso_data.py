@@ -179,6 +179,51 @@ def fit_eofs(data: ENSOData, fit_end: int, n_modes: int) -> EOFBasis:
     return EOFBasis(patterns, w)
 
 
+def pca_basis(delay: np.ndarray, train_end: int,
+              rank: int) -> tuple[np.ndarray, np.ndarray]:
+    """``(mean, components)`` of a delay embedding, fitted training-only.
+
+    The SVD sees only the complete rows strictly before ``train_end``, so no
+    verification month enters the basis.
+    """
+    delay = np.asarray(delay, dtype=np.float64)
+    fit = np.all(np.isfinite(delay), axis=1)
+    fit[int(train_end):] = False
+    if not fit.any():
+        raise ValueError("no complete delay rows before train_end")
+    mean = delay[fit].mean(axis=0)
+    _, _, vt = np.linalg.svd(delay[fit] - mean, full_matrices=False)
+    return mean, vt[:min(int(rank), vt.shape[0])]
+
+
+def pca_state(delay: np.ndarray, train_end: int, rank: int) -> np.ndarray:
+    """Training-fit PCA scores of a delay embedding, NaN rows preserved.
+
+    A delay embedding's leading rows are NaN because they have no full history.
+    Every complete row is projected and the incomplete ones stay NaN, so
+    accidental use of missing context stays obvious rather than being silently
+    padded to zero.
+
+    This is the state map the EEG BSO applies before its dictionary
+    (``OperatorBSOConfig.reduced_state_dimension``); using it here makes the two
+    experiments' state construction match as well as their dictionaries do, and
+    :func:`pca_inverse` is the counterpart that lets a propagated state be read
+    back out the way ``eeg_operator_bso.rollout_operator_bso`` does.
+    """
+    delay = np.asarray(delay, dtype=np.float64)
+    complete = np.all(np.isfinite(delay), axis=1)
+    mean, components = pca_basis(delay, train_end, rank)
+    out = np.full((len(delay), len(components)), np.nan)
+    out[complete] = (delay[complete] - mean) @ components.T
+    return out
+
+
+def pca_inverse(scores: np.ndarray, mean: np.ndarray,
+                components: np.ndarray) -> np.ndarray:
+    """Map reduced-state scores back to the delay embedding they came from."""
+    return np.asarray(scores, dtype=np.float64) @ components + mean
+
+
 def build_grid_dataset(data: ENSOData, start: int, end: int,
                        horizon: int = 1) -> dict:
     """A ``grid2d`` BSO dataset of consecutive-month anomaly pairs in [start,end)."""

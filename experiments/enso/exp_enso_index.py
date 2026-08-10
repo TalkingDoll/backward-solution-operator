@@ -8,16 +8,60 @@ bypasses the BSO entirely: it has no dictionary and forms no Galerkin matrix.
 This module supplies the missing object -- the direct-forecast construction
 carried *inside* the BSO framework:
 
-    y(t+tau) ~= sum_j c_j(tau) psi_j(z(t)),        z(t) = [y(t-11) ... y(t)]
+    y(t+tau) ~= sum_j c_j(tau) psi_j(z(t))
 
-The dictionary ``Psi`` is trained by the two-phase BSO recipe (a frozen neural
-operator, then a Galerkin/EDMD-DL invariance objective) and the per-lead
-coefficients ``c(tau)`` are fitted by ridge least squares. That is structurally
-**exactly the KAF construction** of Wang, Slawinska & Giannakis (2020),
+for a reduced state ``z(t)`` carrying 12 months of memory. The dictionary
+``Psi`` is trained by the two-phase BSO recipe (a frozen neural operator, then a
+Galerkin/EDMD-DL invariance objective) and the per-lead coefficients ``c(tau)``
+are fitted by ridge least squares. That is structurally **exactly the KAF
+construction** of Wang, Slawinska & Giannakis (2020),
 ``c_l(tau) = (1/N) sum_n phi_ln y_{n+q}``, with the BSO's learned dictionary in
-place of their kernel eigenbasis. The Galerkin matrix ``K`` is still produced by
-phase B -- it is what shapes the dictionary -- but it is *not* used to forecast,
-which is the difference from the propagated ``bno`` rows.
+place of their kernel eigenbasis.
+
+The Galerkin matrix ``K`` from phase B is reported two ways: the per-lead fits
+above do not use it (it only shapes the dictionary), while ``bso_prop`` forecasts
+every lead by propagating it, exactly as the published EEG rollout does
+(``eeg_operator_bso.rollout_operator_bso``). The second uses one operator
+and a single readout where the first uses ``horizon`` independent regressions,
+so the two together separate skill from parameter count.
+
+Equal information, one varying factor
+-------------------------------------
+Every forecast rung below is fitted on the **same predictor state**, over the
+same origins, with its ridge selected by the same protocol. That is the whole
+point of the module: an earlier version gave the BSO a 12-month delay state
+while its baselines saw a single month, so the reported margin measured memory,
+not the dictionary. The ladder separates the factors instead:
+
+===========  ======================================  ==========================
+rung         predictors                              isolates
+===========  ======================================  ==========================
+``lim_prop`` propagated ``G(tau)`` on 20 PCs         the classical benchmark
+``lim_wang`` Wang et al. ``tau0 = 2``                the published variant
+``lim_inst`` ``[1, c(t)]``, 20 EOFs, one month       its per-lead counterpart
+``lim_raw``  ``[1, X(t)]``, 12 x 20 delay            what memory alone buys
+``linear_*`` ``[1, z(t)]``, the reduced state        what the compression buys
+``bso_*``    ``[1, z, h_theta(z)]``                  **the learned dictionary**
+``bso_prop`` ``Psi K^n``, state block, fixed map    the EEG rollout, verbatim
+``mlp_*``    a plain MLP on ``z``                    dictionary vs. generic net
+===========  ======================================  ==========================
+
+``bso_* - linear_*`` is the claim, at identical input.
+
+One asymmetry is deliberate. The three LIM rows are **not** ridge-tuned: a LIM
+is ``G(tau) = C(tau) C(0)^-1`` on a truncated PC basis, the truncation is its
+regularisation, and a cross-validated ridge on top would make it a
+better-conditioned estimator that is no longer the published method. The
+``linear_*`` and ``lim_raw`` rows *are* tuned, because they are controls rather
+than named baselines and their entire job is to be fitted exactly as the BSO is.
+Reporting both kinds is what keeps "fitted as published" and "fitted identically"
+from having to be the same row.
+
+Two reduced states are carried so the choice of state is visible rather than
+assumed: ``eof`` (a training-fit PCA of the 12-month delay embedding of 20 EOF
+coefficients) and ``index`` (the 12-month Niño-3.4 history alone).
+``direct_fno`` is kept as a deliberately *unmatched* reference -- it sees the
+whole field -- and is labelled as such wherever it appears.
 
 Why the EEG BSO rather than ``run_bso_pipeline``
 ------------------------------------------------
@@ -26,19 +70,16 @@ non-trivial direct forecast:
 
 * ``run_bso_pipeline`` (``edmd_bso_method.build_basis``) builds columns from
   ``BasisNet(coords)`` -- functions of the *spatial coordinate*. A state enters
-  only through ``c_j = <psi_j, u>_w``, which is **linear in the state**. With a
-  12-point state the dictionary spans all of R^12 plus the constant, so a direct
-  per-lead regression on it would be *identically* linear regression on
-  ``[1, z]``: provably degenerate.
+  only through ``c_j = <psi_j, u>_w``, which is **linear in the state**. A direct
+  per-lead regression on it is therefore *identically* the ``linear_*`` rung:
+  provably degenerate.
 * ``eeg_edmddl.PaperEDMDDLDictionary`` builds ``Psi(z) = [1, z, h_theta(z)]``,
   an MLP of the *state*. This is the nonlinear hypothesis space KAF assumes, so
   it is the one used here.
 
-The linear case is not discarded, it is kept as the control (``bso_direct_linear``
-below), which is what makes the learned variant's margin interpretable.
-
 Usage:
     python -m experiments.enso.exp_enso_index [--quick]
+    python -m experiments.enso.exp_enso_index --ladder   # the table, no figure
 """
 
 from __future__ import annotations
@@ -53,6 +94,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from torch import nn
 
 sys.dont_write_bytecode = True
 
@@ -64,30 +106,46 @@ from experiments.eeg.eeg_edmddl import PaperEDMDDLDictionary
 from experiments.eeg.eeg_operator_bso import (TemporalFNOStateOperator,
                                                _dictionary_values,
                                                _galerkin_transition)
-from experiments.enso.enso_data import fit_eofs, load_ersstv5
+from experiments.enso.enso_data import (fit_eofs, load_ersstv5, pca_basis,
+                                         pca_inverse, pca_state)
 from experiments.enso.enso_direct import predict_direct, train_direct
-from experiments.enso.enso_lim import fit_lim_direct, predict_lim_direct
+from experiments.enso.enso_lim import (RIDGE_GRID, fit_direct_cv,
+                                        fit_lim_direct, fit_lim_wang,
+                                        predict_lim_direct)
 from experiments.enso.exp_enso import (DATA_PATH, HORIZON, LIM_MODES, _corr,
                                         _nino34, damped_persistence_gamma,
                                         encode, fit_lim, lim_forecast)
 from experiments.enso.exp_enso_delay import HISTORY, delay_state
 from figure_style import (DOUBLE_COLUMN_WIDTH, GRID_COLOR, LINEWIDTH,
-                          MARKER_EDGE_WIDTH, MARKER_SIZE, TEXT_COLOR,
-                          add_figure_title, add_legend, make_figure,
-                          publication_style, save_publication_pair,
-                          style_axis)
+                          MARKER_EDGE_WIDTH, MARKER_SIZE, add_figure_title,
+                          add_legend, make_figure, publication_style,
+                          save_publication_pair, style_axis)
 from plotting_utils import print_figure_caption
 from project_paths import FIGURES_DIR, RESULTS_DIR
 
-# 1 constant + HISTORY fixed state coordinates + 11 learned functions, mirroring
-# the EEG split of 1 + 8 + 11 (``eeg_operator_bso.OperatorBSOConfig``).
-DICTIONARY_SIZE = 1 + HISTORY + 11
+# The reduced state every method is handed. ``REDUCED_DIM`` plays the role of
+# ``OperatorBSOConfig.reduced_state_dimension`` (8 for EEG); 12 keeps one
+# dimension per month of memory.
+COMMON_MODES = LIM_MODES          # EOF coefficients entering the delay embedding
+REDUCED_DIM = 12
+
+# 1 constant + REDUCED_DIM fixed state coordinates + 11 learned functions,
+# mirroring the EEG split of 1 + 8 + 11 (``eeg_operator_bso.OperatorBSOConfig``).
+DICTIONARY_SIZE = 1 + REDUCED_DIM + 11
 TRANSITION_RIDGE = 1e-6
 # ``eeg_operator_bso.OperatorBSOConfig.dictionary_hidden_dims``, so the
-# dictionary construction is identical to the EEG experiment's. The wider fit is
-# reported alongside it as a sensitivity check, not as an alternative.
+# dictionary construction is identical to the EEG experiment's. The matched-input
+# MLP reuses the same widths, so "learned dictionary vs. generic net" cannot be a
+# capacity comparison in disguise.
 HIDDEN_DIMS = (16, 16)
-WIDE_HIDDEN_DIMS = (64, 64)
+
+# Verification uncertainty. Monthly origins overlap heavily -- the record holds
+# roughly one independent ENSO event per two years -- so a plain bootstrap over
+# origins would be far too confident. Blocks of BOOTSTRAP_BLOCK months keep whole
+# events together.
+BOOTSTRAP_BLOCK = 24
+BOOTSTRAP_SAMPLES = 2000
+BOOTSTRAP_SEED = 2026
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +170,45 @@ def index_delay_states(index: np.ndarray, train_end: int,
     return delay_state(standard[:, None], int(history)), mean, scale
 
 
+def reduced_states(data, index: np.ndarray, patterns: np.ndarray) -> dict:
+    """``name -> (state, readout)`` for the states the ladder is run on.
+
+    ``eof``
+        a training-fit PCA of the 12-month delay embedding of the leading
+        ``COMMON_MODES`` EOF coefficients -- memory *and* the basin.
+    ``index``
+        the 12-month Niño-3.4 history alone -- memory without the basin.
+
+    Returning both is what makes the choice of state visible instead of assumed:
+    each gets its own dictionary, its own linear control and its own MLP, so a
+    margin can be attributed to the dictionary rather than to the state it
+    happened to be given.
+
+    ``readout`` maps a state back to Niño-3.4 in °C with no fitted parameters,
+    by inverting the state map and applying the standard area average. It is the
+    ENSO counterpart of ``rollout_operator_bso``'s "reconstruct only through
+    fixed inverse PCA", and it is what lets the propagated rung be the same
+    construction as the EEG rollout rather than a regression wearing its name.
+    """
+    coeff = encode(patterns[:COMMON_MODES], data.weights, data.anomalies)
+    delay = delay_state(coeff, HISTORY)
+    mean, components = pca_basis(delay, data.train_end, REDUCED_DIM)
+
+    def eof_readout(scores):
+        newest = pca_inverse(scores, mean, components)[:, -COMMON_MODES:]
+        return _nino34(data, newest @ patterns[:COMMON_MODES])
+
+    _, index_mean, index_scale = index_delay_states(index, data.train_end)
+
+    def index_readout(scores):
+        return np.asarray(scores)[:, -1] * index_scale + index_mean
+
+    return {
+        "eof": (pca_state(delay, data.train_end, REDUCED_DIM), eof_readout),
+        "index": (index_delay_states(index, data.train_end)[0], index_readout),
+    }
+
+
 def _pair_ends(first: int, last: int) -> np.ndarray:
     """Ends ``t`` of one-month pairs ``z(t) -> z(t+1)`` with ``t+1 < last``."""
     return np.arange(int(first), int(last) - 1)
@@ -121,29 +218,45 @@ def _pair_ends(first: int, last: int) -> np.ndarray:
 # Phase A: neural operator on the delay state
 # ---------------------------------------------------------------------------
 
-def _operator_metadata(history, epochs, train_end, width, modes,
-                       layers) -> dict:
-    return {"model": "index_delay_temporal_fno", "history": int(history),
-            "epochs": int(epochs), "train_end": int(train_end),
-            "width": int(width), "modes": int(modes), "layers": int(layers)}
+def _operator_metadata(state, state_dim, epochs, train_end, width, modes,
+                       layers, batch_size, lr, weight_decay, seed,
+                       n_pairs) -> dict:
+    """Everything that changes the fitted weights, so a stale reload cannot.
+
+    The earlier version recorded only architecture and epochs, which meant an
+    edited learning rate, batch size or seed silently reused old weights -- and,
+    worse, that swapping the reduced state kept the same tensor shapes and so
+    matched the old checkpoint exactly.
+    """
+    return {"model": "reduced_state_temporal_fno", "state": str(state),
+            "state_dim": int(state_dim), "epochs": int(epochs),
+            "train_end": int(train_end), "width": int(width),
+            "modes": int(modes), "layers": int(layers),
+            "batch_size": int(batch_size), "lr": float(lr),
+            "weight_decay": float(weight_decay), "seed": int(seed),
+            "n_pairs": int(n_pairs), "history": int(HISTORY),
+            "common_modes": int(COMMON_MODES)}
 
 
-def train_phase_a(current: np.ndarray, target: np.ndarray, *, history: int,
+def train_phase_a(current: np.ndarray, target: np.ndarray, *, state: str,
                   train_end: int, width: int = 24, modes: int = 12,
                   layers: int = 2, epochs: int = 200, batch_size: int = 64,
                   lr: float = 5e-4, weight_decay: float = 2e-5,
                   seed: int = 2026, checkpoint: Path | None = None):
     """Fit and freeze the one-month flow map ``z(t) -> z(t+1)``.
 
-    Because every coordinate of the state is an index value, this *is* direct
-    index supervision: the target's newest coordinate is ``y(t+1)``. Unlike
+    The state's coordinates are a fixed linear functional of the record, so this
+    is one-step supervision on the reduced state itself. Unlike
     ``run_bso_pipeline``'s phase A there is no two-step (``sg_weight``) term --
     the EEG operator is trained one-step only, and that convention is kept.
     """
-    meta = _operator_metadata(history, epochs, train_end, width, modes, layers)
+    state_dim = int(current.shape[1])
+    meta = _operator_metadata(state, state_dim, epochs, train_end, width, modes,
+                              layers, batch_size, lr, weight_decay, seed,
+                              len(current))
     set_seed(seed)
     operator = TemporalFNOStateOperator(
-        1, int(history), hidden_channels=int(width), n_modes=int(modes),
+        1, state_dim, hidden_channels=int(width), n_modes=int(modes),
         n_layers=int(layers)).to(device)
 
     if checkpoint is not None and Path(checkpoint).exists():
@@ -155,7 +268,7 @@ def train_phase_a(current: np.ndarray, target: np.ndarray, *, history: int,
             operator.load_state_dict({k: v for k, v in payload["state"].items()
                                       if k != "_metadata"})
             print(f"[enso-index] loaded phase-A checkpoint {checkpoint}")
-            return operator.eval()
+            return operator.eval(), meta
 
     x = torch.as_tensor(current[:, None, :], dtype=torch.float32)
     y = torch.as_tensor(target[:, None, :], dtype=torch.float32)
@@ -179,12 +292,12 @@ def train_phase_a(current: np.ndarray, target: np.ndarray, *, history: int,
         torch.save({"state": dict(operator.state_dict()), "meta": meta},
                    checkpoint)
         print(f"[enso-index] saved phase-A checkpoint {checkpoint}")
-    return operator
+    return operator, meta
 
 
 def operator_image(operator, states: np.ndarray,
                    batch_size: int = 256) -> np.ndarray:
-    """``(N, history)`` one-month images of the frozen phase-A operator."""
+    """``(N, state_dim)`` one-month images of the frozen phase-A operator."""
     out = []
     operator.eval()
     with torch.no_grad():
@@ -201,7 +314,7 @@ def operator_image(operator, states: np.ndarray,
 # ---------------------------------------------------------------------------
 
 def train_phase_b(current_state: np.ndarray, operator_target_state: np.ndarray,
-                  *, dictionary_size: int = DICTIONARY_SIZE,
+                  *, operator_meta: dict, dictionary_size: int | None = None,
                   hidden_dims=HIDDEN_DIMS, epochs: int = 200,
                   batch_size: int = 64, lr: float = 1e-3, seed: int = 2026,
                   print_every: int = 0, checkpoint: Path | None = None):
@@ -211,20 +324,32 @@ def train_phase_b(current_state: np.ndarray, operator_target_state: np.ndarray,
     the invariance residual ``Psi(z) K - Psi(F(z))``, exactly the alternation in
     ``eeg_operator_bso._train_phase_b``; the loop is written out here rather
     than imported because that function is bound to ``OperatorBSOConfig``'s EEG
-    defaults. ``K`` is returned for diagnostics only -- forecasting never uses
-    it.
+    defaults.
+
+    ``operator_meta`` is phase A's metadata, stored inside this checkpoint's own.
+    Without it a phase-A change invalidates ``phase_a.pt`` but leaves this
+    checkpoint matching, so a dictionary fitted against the *previous* frozen
+    operator reloads silently while ``K`` is recomputed from the new one -- a
+    wrong answer that looks entirely plausible. The reduced states here have
+    equal width, so the tensor shapes alone would not catch the swap.
     """
+    state_dim = int(current_state.shape[1])
+    dictionary_size = (1 + state_dim + 11 if dictionary_size is None
+                       else int(dictionary_size))
     set_seed(seed)
     dictionary = PaperEDMDDLDictionary(
-        state_dimension=int(current_state.shape[1]),
-        dictionary_size=int(dictionary_size),
+        state_dimension=state_dim, dictionary_size=dictionary_size,
         hidden_dims=tuple(int(h) for h in hidden_dims)).to(device)
     weights = np.full(len(current_state), 1.0 / len(current_state))
-    meta = {"model": "index_edmddl_dictionary",
-            "state_dimension": int(current_state.shape[1]),
-            "dictionary_size": int(dictionary_size),
+    meta = {"model": "reduced_state_edmddl_dictionary",
+            "state_dimension": state_dim,
+            "dictionary_size": dictionary_size,
             "hidden_dims": tuple(int(h) for h in hidden_dims),
-            "epochs": int(epochs), "n_pairs": int(len(current_state))}
+            "epochs": int(epochs), "batch_size": int(batch_size),
+            "lr": float(lr), "seed": int(seed),
+            "ridge": float(TRANSITION_RIDGE),
+            "n_pairs": int(len(current_state)),
+            "operator": dict(operator_meta)}
 
     def _finalise():
         dictionary.eval()
@@ -291,6 +416,126 @@ def dictionary_features(dictionary, states: np.ndarray) -> np.ndarray:
     return out
 
 
+def propagated_forecast(psi: np.ndarray, transition: np.ndarray,
+                        state_dim: int, readout, origins: np.ndarray,
+                        horizon: int) -> np.ndarray:
+    """``Psi K^n``, state block out, fixed readout -- the EEG rollout, verbatim.
+
+    This is ``eeg_operator_bso.rollout_operator_bso`` transposed to ENSO: push
+    the dictionary forward with the Galerkin operator, slice the fixed state
+    coordinates ``Psi[:, 1:1+state_dim]`` back out, and reconstruct through the
+    *fixed* inverse state map. Nothing is fitted per lead, and nothing is fitted
+    to the index at all -- the whole forecast is ``K`` plus a map that was
+    determined before any forecasting began.
+
+    That makes it the only rung here with an equivalent in the published EEG
+    figure, and the reason to prefer it over a fitted linear readout of ``Psi``:
+    the fitted version would score better while quietly reintroducing the
+    per-lead tuning the rung exists to do without.
+
+    ``psi`` must include its constant column, since ``K`` acts on the full
+    dictionary under the ``Psi(z_next) ~= Psi(z) @ K`` convention.
+    """
+    features = np.asarray(psi, dtype=np.float64)[np.asarray(origins, dtype=int)]
+    transition = np.asarray(transition, dtype=np.float64)
+    stop = 1 + int(state_dim)
+    out = []
+    for _ in range(int(horizon)):
+        features = features @ transition
+        out.append(readout(features[:, 1:stop]))
+    return np.stack(out, axis=1)
+
+
+class DirectMLP(nn.Module):
+    """Plain MLP from the reduced state to every lead at once.
+
+    Deliberately the same widths and activation as
+    ``PaperEDMDDLDictionary.learned_dictionary``, so "learned dictionary vs.
+    generic network" is a comparison of *construction* -- Galerkin invariance
+    against direct supervision -- and not of capacity.
+    """
+
+    def __init__(self, input_dim: int, horizon: int, hidden_dims=HIDDEN_DIMS):
+        super().__init__()
+        widths = (int(input_dim), *(int(h) for h in hidden_dims), int(horizon))
+        layers: list[nn.Module] = []
+        for i, (a, b) in enumerate(zip(widths[:-1], widths[1:])):
+            layers.append(nn.Linear(a, b))
+            if i < len(widths) - 2:
+                layers.append(nn.Tanh())
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, state: torch.Tensor) -> torch.Tensor:
+        return self.net(state)
+
+
+def train_direct_mlp(states: np.ndarray, index: np.ndarray,
+                     origins: np.ndarray, horizon: int, *, state: str,
+                     hidden_dims=HIDDEN_DIMS, epochs: int = 400,
+                     batch_size: int = 64, lr: float = 1e-3,
+                     weight_decay: float = 1e-4, seed: int = 2026,
+                     checkpoint: Path | None = None):
+    """Fit :class:`DirectMLP` on the same origins as every other rung."""
+    origins = np.asarray(origins, dtype=int)
+    scale = float(np.std(np.asarray(index)[origins]))
+    scale = scale if scale > 1e-12 else 1.0
+    meta = {"model": "reduced_state_direct_mlp", "state": str(state),
+            "state_dim": int(states.shape[1]), "horizon": int(horizon),
+            "hidden_dims": tuple(int(h) for h in hidden_dims),
+            "epochs": int(epochs), "batch_size": int(batch_size),
+            "lr": float(lr), "weight_decay": float(weight_decay),
+            "seed": int(seed), "n_origins": int(len(origins)),
+            "first_origin": int(origins[0])}
+
+    set_seed(seed)
+    model = DirectMLP(states.shape[1], horizon, hidden_dims).to(device)
+    if checkpoint is not None and Path(checkpoint).exists():
+        payload = torch.load(checkpoint, map_location=device,
+                             weights_only=False)
+        if payload.get("meta") == meta:
+            model.load_state_dict({k: v for k, v in payload["state"].items()
+                                   if k != "_metadata"})
+            print(f"[enso-index] loaded MLP checkpoint {checkpoint}")
+            return model.eval(), scale
+
+    x = torch.as_tensor(states[origins], dtype=torch.float32)
+    y = torch.as_tensor(
+        np.stack([np.asarray(index)[origins + lead]
+                  for lead in range(1, int(horizon) + 1)], axis=1) / scale,
+        dtype=torch.float32)
+    optimiser = torch.optim.Adam(model.parameters(), lr=float(lr),
+                                 weight_decay=float(weight_decay))
+    rng = np.random.default_rng(seed)
+    model.train()
+    for _ in range(int(epochs)):
+        order = rng.permutation(len(x))
+        for start in range(0, len(order), int(batch_size)):
+            idx = torch.as_tensor(order[start:start + int(batch_size)],
+                                  dtype=torch.long)
+            loss = torch.mean((model(x[idx].to(device))
+                               - y[idx].to(device)) ** 2)
+            optimiser.zero_grad(set_to_none=True)
+            loss.backward()
+            optimiser.step()
+    model.eval()
+    if checkpoint is not None:
+        Path(checkpoint).parent.mkdir(parents=True, exist_ok=True)
+        torch.save({"state": dict(model.state_dict()), "meta": meta},
+                   checkpoint)
+        print(f"[enso-index] saved MLP checkpoint {checkpoint}")
+    return model, scale
+
+
+def predict_mlp(model, states: np.ndarray, origins: np.ndarray,
+                scale: float) -> np.ndarray:
+    """``(n_origins, horizon)`` index predictions in physical units."""
+    model.eval()
+    with torch.no_grad():
+        batch = torch.as_tensor(states[np.asarray(origins, dtype=int)],
+                                dtype=torch.float32, device=device)
+        return model(batch).cpu().numpy().astype(np.float64) * float(scale)
+
+
 # ---------------------------------------------------------------------------
 # Experiment
 # ---------------------------------------------------------------------------
@@ -313,14 +558,73 @@ def _direct_metrics(pred_n34, truth_n34, horizon, mask=None):
     return dict(nino34_rmse=rmse, nino34_acc=acc)
 
 
+def _block_resamples(n_origins: int, block: int, n_samples: int, seed: int):
+    """Indices for a moving-block bootstrap over ``n_origins`` launches.
+
+    Origins are consecutive months, so they are nowhere near independent: the
+    verification window holds ~17 years and ENSO decorrelates on a ~2-year
+    scale, which is roughly one independent event per ``block`` origins. Drawing
+    single origins with replacement would treat neighbouring months as fresh
+    information and produce intervals several times too narrow.
+    """
+    rng = np.random.default_rng(int(seed))
+    block = max(1, min(int(block), int(n_origins)))
+    n_blocks = int(np.ceil(n_origins / block))
+    starts = rng.integers(0, n_origins - block + 1,
+                          size=(int(n_samples), n_blocks))
+    offsets = np.arange(block)
+    draws = (starts[:, :, None] + offsets[None, None, :])
+    return draws.reshape(int(n_samples), -1)[:, :n_origins]
+
+
+def acc_difference_interval(pred_a, pred_b, truth, horizon, mask=None,
+                            block: int = BOOTSTRAP_BLOCK,
+                            n_samples: int = BOOTSTRAP_SAMPLES,
+                            seed: int = BOOTSTRAP_SEED, alpha: float = 0.05):
+    """Percentile CI on the *paired* per-lead ``ACC(a) - ACC(b)``.
+
+    Both forecasts are resampled on the same drawn origins, so the shared
+    year-to-year variation of the verification window cancels and the interval
+    speaks to the difference rather than to either curve's absolute level.
+    """
+    draws = _block_resamples(len(truth), block, n_samples, seed)
+    lower = np.full(int(horizon), np.nan)
+    upper = np.full(int(horizon), np.nan)
+    for lead in range(int(horizon)):
+        column = (draws if mask is None
+                  else np.where(mask[draws, lead], draws, -1))
+        deltas = np.empty(len(draws))
+        for i, idx in enumerate(column):
+            idx = idx[idx >= 0]
+            if len(idx) < 3:
+                deltas[i] = np.nan
+                continue
+            t = truth[idx, lead]
+            deltas[i] = (_corr(pred_a[idx, lead], t)
+                         - _corr(pred_b[idx, lead], t))
+        if np.isfinite(deltas).sum() < 2:
+            continue
+        lower[lead], upper[lead] = np.nanpercentile(
+            deltas, [100 * alpha / 2, 100 * (1 - alpha / 2)])
+    return lower, upper
+
+
 def run(quick: bool, horizon: int | None = None, ragged: bool = False) -> dict:
-    """Fit everything and score it.
+    """Fit every ladder rung on shared origins and score them identically.
 
     ``horizon`` overrides the 12-month default. ``ragged`` scores each lead on
     every origin that has an observed target rather than on one common origin
     set -- necessary past ~24 months, where a fixed origin set would collapse to
     a handful of launches. It is off at the default horizon so those numbers are
     unaffected.
+
+    The classical LIM appears here as ``lim_inst``, the per-lead lagged
+    regression on instantaneous EOF coefficients, rather than as the propagated
+    lag-1 propagator used by ``exp_enso``. Two reasons: it is the stronger of the
+    two on this record, so the baseline is not weakened for convenience; and it
+    is fitted on ``fit_origins`` like everything else, whereas the propagated
+    variant is estimated from every training month and so would not share the
+    sample.
     """
     data = load_ersstv5(DATA_PATH)
     if horizon is None:
@@ -329,45 +633,13 @@ def run(quick: bool, horizon: int | None = None, ragged: bool = False) -> dict:
     ckpt_dir = None if quick else RESULTS_DIR / "enso_index"
 
     index = _nino34(data, data.anomalies)
-    states, _, _ = index_delay_states(index, data.train_end)
-
-    # Phase A on training pairs only: the latest target month is train_end - 1.
-    ends = _pair_ends(HISTORY - 1, data.train_end)
-    current, target = states[ends], states[ends + 1]
-    operator = train_phase_a(
-        current, target, history=HISTORY, train_end=data.train_end,
-        width=8 if quick else 24, modes=6 if quick else 12,
-        layers=2, epochs=20 if quick else 200,
-        checkpoint=None if quick else ckpt_dir / "phase_a.pt")
-
-    # Phase B: the dictionary is fitted to the frozen operator, not to data.
-    # Fitted at both hidden widths. HIDDEN_DIMS is the EEG BSO's own setting
-    # (``OperatorBSOConfig.dictionary_hidden_dims``) and is the headline row, so
-    # the dictionary construction here matches the EEG experiment exactly; the
-    # wide fit is carried alongside purely to show the choice does not drive the
-    # result. Everything else about the two is identical.
-    image = operator_image(operator, current)
-    dictionaries, K, dict_diag = {}, None, None
-    for key, hidden in (("", HIDDEN_DIMS), ("_w64", WIDE_HIDDEN_DIMS)):
-        dictionaries[key], transition, diag = train_phase_b(
-            current, image, hidden_dims=hidden,
-            epochs=20 if quick else 200, print_every=0 if quick else 50,
-            checkpoint=None if quick else
-            ckpt_dir / f"phase_b_h{hidden[0]}.pt")
-        if not key:                       # diagnostics report the headline fit
-            K, dict_diag = transition, diag
-
-    # --- the direct step -------------------------------------------------
-    # ``fit_lim_direct`` prepends an intercept, so passing Psi without its
-    # constant column makes that intercept *be* Psi's constant: the fit is
-    # exactly the per-lead ridge least squares in the module docstring. Every
-    # variant goes through the same call, so the only difference between them is
-    # the dictionary itself.
-    psi_linear = states                                   # Psi(z) = [1, z]
+    eof = fit_eofs(data, data.train_end, COMMON_MODES)
+    coeff = encode(eof.patterns[:COMMON_MODES], data.weights, data.anomalies)
+    states = reduced_states(data, index, eof.patterns)
 
     # Fixed origin set: every launch verifies every lead. Ragged: launch from
     # every post-training month and let each lead use the origins that still
-    # have an observed target inside the test window. The 18-month reserve past
+    # have an observed target inside the test window. The reserve past
     # ``test_end`` stays untouched either way.
     if ragged:
         origins = np.arange(data.train_end, data.test_end - 1)
@@ -379,36 +651,103 @@ def run(quick: bool, horizon: int | None = None, ragged: bool = False) -> dict:
         mask = None
         truth_n34 = np.stack([index[origins + lead]
                               for lead in range(1, horizon + 1)], axis=1)
+    # One fitting origin set for every rung, so no method is fitted on more
+    # months than another.
     fit_origins = np.arange(HISTORY - 1, data.train_end - horizon)
 
-    variants = [(f"bso_direct_learned{key}",
-                 dictionary_features(d, states)[:, 1:])
-                for key, d in dictionaries.items()]
-    metrics = {}
-    for name, features in variants + [("bso_direct_linear", psi_linear)]:
-        weights = fit_lim_direct(features, index, fit_origins, horizon)
-        metrics[name] = _direct_metrics(
-            predict_lim_direct(weights, features[origins]), truth_n34, horizon,
-            mask)
+    metrics, ridges, predictions = {}, {}, {}
 
-    # --- baselines, all index-space and all fitted training-only ---------
-    eof = fit_eofs(data, data.train_end, LIM_MODES)
-    coeff = encode(eof.patterns[:LIM_MODES], data.weights, data.anomalies)
-    G = fit_lim(coeff[:data.train_end])
-    lim_n34 = np.stack(
+    def _score(name, prediction):
+        predictions[name] = prediction
+        metrics[name] = _direct_metrics(prediction, truth_n34, horizon, mask)
+
+    def _regress(name, features):
+        """One rung: blocked-CV ridge on ``features``, scored like every other.
+
+        ``fit_direct_cv`` prepends an intercept, so a dictionary is passed
+        without its constant column and that intercept *becomes* the constant.
+        Every rung goes through this one call, so the only thing that differs
+        between them is the feature matrix.
+        """
+        weights, ridges[name] = fit_direct_cv(features, index, fit_origins,
+                                              horizon, grid=RIDGE_GRID)
+        _score(name, predict_lim_direct(weights, features[origins]))
+
+    # --- rungs on the reduced states: dictionary vs. its own controls -----
+    diagnostics = {}
+    for state_name, (state, readout) in states.items():
+        ends = _pair_ends(HISTORY - 1, data.train_end)
+        current, target = state[ends], state[ends + 1]
+
+        # Phase A on training pairs only: the latest target month is
+        # train_end - 1.
+        operator, operator_meta = train_phase_a(
+            current, target, state=state_name, train_end=data.train_end,
+            width=8 if quick else 24, modes=6 if quick else 12,
+            layers=2, epochs=20 if quick else 200,
+            checkpoint=None if quick else
+            ckpt_dir / f"phase_a_{state_name}.pt")
+
+        # Phase B: the dictionary is fitted to the frozen operator, not to data.
+        # HIDDEN_DIMS is the EEG BSO's own setting, so the construction here is
+        # identical to that experiment's.
+        image = operator_image(operator, current)
+        dictionary, K, diag = train_phase_b(
+            current, image, operator_meta=operator_meta,
+            epochs=20 if quick else 200, print_every=0 if quick else 50,
+            checkpoint=None if quick else
+            ckpt_dir / f"phase_b_{state_name}.pt")
+
+        psi = dictionary_features(dictionary, state)
+        _regress(f"bso_{state_name}", psi[:, 1:])
+        _regress(f"linear_{state_name}", state)
+        _score(f"bso_prop_{state_name}",
+               propagated_forecast(psi, K, state.shape[1], readout, origins,
+                                   horizon))
+
+        mlp, mlp_scale = train_direct_mlp(
+            state, index, fit_origins, horizon, state=state_name,
+            epochs=40 if quick else 400,
+            checkpoint=None if quick else
+            ckpt_dir / f"mlp_{state_name}_h{horizon}.pt")
+        _score(f"mlp_{state_name}", predict_mlp(mlp, state, origins, mlp_scale))
+
+        diagnostics[state_name] = dict(
+            state_dim=int(state.shape[1]),
+            dictionary_size=int(dictionary.dictionary_size),
+            n_learned=int(dictionary.n_learned_observables),
+            invariance_mse=float(diag["weighted_invariance_mse"]),
+            transition_radius=float(diag["transition_spectral_radius"]),
+            growth=[float(np.linalg.norm(np.linalg.matrix_power(K, n), 2))
+                    for n in range(1, horizon + 1)])
+
+    # --- the LIM baselines, fitted as the literature defines them ---------
+    # No ridge selection here, deliberately. A LIM is
+    # ``G(tau) = C(tau) C(0)^-1`` on a truncated PC basis: the truncation to
+    # COMMON_MODES modes *is* its regularisation, and bolting cross-validated
+    # ridge on top would produce a better-conditioned estimator that is no
+    # longer the method being compared against. The rule applied throughout is
+    # that a **named literature baseline** is fitted as published, while a
+    # **control whose only job is to isolate the dictionary** is fitted exactly
+    # like the BSO -- see ``linear_*`` above.
+    G = fit_lim(coeff[:data.train_end], ridge=0.0)
+    _score("lim_prop", np.stack(
         [_nino34(data, lim_forecast(G, coeff[origins], horizon)[:, l]
-                 @ eof.patterns[:LIM_MODES]) for l in range(horizon)], axis=1)
-    metrics["lim"] = _direct_metrics(lim_n34, truth_n34, horizon, mask)
+                 @ eof.patterns[:COMMON_MODES]) for l in range(horizon)],
+        axis=1))
+    wang = fit_lim_wang(coeff[:data.train_end], index[:data.train_end],
+                        tau0=2, ridge=0.0)
+    _score("lim_wang", wang.index_forecast(coeff[origins], horizon))
+    _score("lim_inst", predict_lim_direct(
+        fit_lim_direct(coeff, index, fit_origins, horizon, ridge=0.0),
+        coeff[origins]))
 
-    lim_direct_w = fit_lim_direct(coeff, index, fit_origins, horizon)
-    metrics["lim_direct"] = _direct_metrics(
-        predict_lim_direct(lim_direct_w, coeff[origins]), truth_n34, horizon,
-        mask)
+    # A control, not a LIM: 241 predictors is the regime where regularisation
+    # decides the answer, so it is tuned like the BSO and labelled accordingly.
+    _regress("lim_raw", np.nan_to_num(delay_state(coeff, HISTORY)))
 
-    # At the default horizon this reuses the checkpoint written by ``exp_enso``,
-    # so the shared comparator is the identical trained model rather than a
-    # re-fit. A different horizon changes the number of output heads, so it gets
-    # its own file instead of silently overwriting the 12-month one.
+    # --- unmatched reference: this one sees the whole field ---------------
+    # Its own checkpoint per horizon, since the head count is the horizon.
     direct_ckpt = ("direct.pt" if horizon == HORIZON
                    else f"direct_h{horizon}.pt")
     direct_model, direct_scale = train_direct(
@@ -416,70 +755,83 @@ def run(quick: bool, horizon: int | None = None, ragged: bool = False) -> dict:
         modes=(6, 10) if quick else (12, 24), width=16 if quick else 48,
         layers=2 if quick else 4, epochs=30 if quick else 400,
         checkpoint=None if quick else RESULTS_DIR / "enso" / direct_ckpt)
-    metrics["direct_fno"] = _direct_metrics(
-        predict_direct(direct_model, data.anomalies[origins], direct_scale),
-        truth_n34, horizon, mask)
+    _score("direct_fno",
+           predict_direct(direct_model, data.anomalies[origins], direct_scale))
 
+    # --- trivial references, legitimately state-free ----------------------
     gamma = damped_persistence_gamma(data, horizon)
     launch = index[origins][:, None]
     leads = np.arange(1, horizon + 1)
-    metrics["climatology"] = _direct_metrics(
-        np.zeros_like(truth_n34), truth_n34, horizon, mask)
-    metrics["persistence"] = _direct_metrics(
-        np.repeat(launch, horizon, axis=1), truth_n34, horizon, mask)
-    metrics["damped_persistence"] = _direct_metrics(
-        launch * (gamma ** leads)[None], truth_n34, horizon, mask)
+    _score("climatology", np.zeros_like(truth_n34))
+    _score("persistence", np.repeat(launch, horizon, axis=1))
+    _score("damped_persistence", launch * (gamma ** leads)[None])
+
+    # The claim, with its uncertainty: the dictionary against its own matched
+    # linear control, on the same drawn origins.
+    intervals = {
+        state_name: acc_difference_interval(
+            predictions[f"bso_{state_name}"],
+            predictions[f"linear_{state_name}"],
+            truth_n34, horizon, mask)
+        for state_name in states}
 
     return dict(data=data, horizon=horizon, metrics=metrics, gamma=gamma,
-                n_origins=len(origins), ragged=bool(ragged),
+                predictions=predictions, ridges=ridges, intervals=intervals,
+                diagnostics=diagnostics, n_origins=len(origins),
+                ragged=bool(ragged), n_fit=len(fit_origins),
                 origins_per_lead=(None if mask is None
-                                  else mask.sum(axis=0).astype(int)), n_fit=len(fit_origins),
-                dictionary_size=dictionaries[""].dictionary_size,
-                n_learned=dictionaries[""].n_learned_observables,
-                invariance_mse=float(dict_diag["weighted_invariance_mse"]),
-                transition_radius=float(dict_diag["transition_spectral_radius"]),
-                growth=[float(np.linalg.norm(np.linalg.matrix_power(K, n), 2))
-                        for n in range(1, horizon + 1)])
+                                  else mask.sum(axis=0).astype(int)))
 
 
-# Nine curves, every property explicit. Dashed entries are the ones expected to
-# lie on top of another curve: the wide-dictionary sensitivity check tracks the
-# headline fit, and damped persistence has exactly persistence's correlation.
-# Drawing them dashed rather than omitting them keeps a legend entry from
-# reading as a missing line.
+# The whole ladder, every property explicit. The encoding carries the design:
+# a **solid** curve and the **dashed** curve of the same colour are the same
+# reduced state fitted two ways, so the gap between a matched pair -- and only
+# that gap -- is the learned dictionary. Curves in other colours vary the state
+# instead of the method.
 DIAGNOSTIC_STYLE = {
-    "bso_direct_learned": dict(
-        label="BSO direct (learned)", color="#d62728", linestyle="-",
-        linewidth=LINEWIDTH["main"], marker="o", zorder=9),
-    "bso_direct_learned_w64": dict(
-        label="BSO direct (wide 64×64)", color="#e377c2", linestyle="--",
+    "bso_eof": dict(
+        label="BSO (EOF state)", color="#d62728", linestyle="-",
+        linewidth=LINEWIDTH["main"], marker="o", zorder=11),
+    "linear_eof": dict(
+        label="Linear (EOF state)", color="#d62728", linestyle="--",
+        linewidth=LINEWIDTH["data"], marker="None", zorder=10),
+    "bso_index": dict(
+        label="BSO (index state)", color="#7b3294", linestyle="-",
+        linewidth=LINEWIDTH["data"], marker="o", zorder=9),
+    "linear_index": dict(
+        label="Linear (index state)", color="#7b3294", linestyle="--",
         linewidth=LINEWIDTH["data"], marker="None", zorder=8),
-    "bso_direct_linear": dict(
-        label="BSO direct (linear control)", color="#9467bd", linestyle="-",
-        linewidth=LINEWIDTH["data"], marker="o", zorder=7),
-    "direct_fno": dict(
-        label="Direct FNO (index only)", color="#ff7f0e", linestyle="-",
-        linewidth=LINEWIDTH["data"], marker="s", zorder=6),
-    "lim_direct": dict(
-        label="Direct lagged LIM", color="#8c564b", linestyle="-",
+    "bso_prop_eof": dict(
+        label="BSO propagated (Ψ Kⁿ rollout)", color="#ff7f0e", linestyle="-",
+        linewidth=LINEWIDTH["data"], marker="D", zorder=7),
+    "mlp_eof": dict(
+        label="MLP (EOF state)", color="#8c564b", linestyle="-",
+        linewidth=LINEWIDTH["data"], marker="v", zorder=6),
+    "lim_inst": dict(
+        label="LIM (per-lead lagged)", color="#1f77b4", linestyle="-",
         linewidth=LINEWIDTH["data"], marker="^", zorder=5),
-    "lim": dict(
-        label="LIM (field rollout)", color="#1f77b4", linestyle="-",
-        linewidth=LINEWIDTH["data"], marker="v", zorder=4),
+    "lim_prop": dict(
+        label="LIM (propagated lag-1)", color="#1f77b4", linestyle=":",
+        linewidth=LINEWIDTH["data"], marker="None", zorder=4),
+    "lim_raw": dict(
+        label="Linear control (raw delay)", color="#17becf", linestyle="-",
+        linewidth=LINEWIDTH["data"], marker="None", zorder=4),
+    "direct_fno": dict(
+        label="FNO (full field, unmatched)", color="#7f7f7f", linestyle="-",
+        linewidth=LINEWIDTH["data"], marker="s", zorder=3),
+    "damped_persistence": dict(
+        label="Damped persistence", color="#2ca02c", linestyle="--",
+        linewidth=LINEWIDTH["data"], marker="None", zorder=2),
     "climatology": dict(
         label="Climatology", color="#000000", linestyle=(0, (6, 4)),
         linewidth=LINEWIDTH["reference"], marker="None", zorder=1),
-    "persistence": dict(
-        label="Persistence", color="#7f7f7f", linestyle="-",
-        linewidth=LINEWIDTH["data"], marker="None", zorder=2),
-    "damped_persistence": dict(
-        label="Damped persistence", color="#2ca02c", linestyle="--",
-        linewidth=LINEWIDTH["data"], marker="None", zorder=3),
 }
 
+# Four legend rows rather than three, hence the extra 0.20 in of bottom margin
+# and of overall height: the panels keep their physical size.
 LAYOUT_DIAGNOSTIC = {
-    "figsize": (DOUBLE_COLUMN_WIDTH, 3.55), "nrows": 1, "ncols": 2,
-    "left": 0.52, "right": 0.10, "bottom": 1.06, "top": 0.52,
+    "figsize": (DOUBLE_COLUMN_WIDTH, 3.75), "nrows": 1, "ncols": 2,
+    "left": 0.52, "right": 0.10, "bottom": 1.26, "top": 0.52,
     "wgap": 0.62, "hgap": 0.0,
     "title_y": 0.975, "legend_loc": "lower center",
     "legend_bbox": (0.5, 0.005), "legend_ncol": 3,
@@ -529,8 +881,8 @@ def plot(metrics, horizon, out_dir: Path):
             ax.set_xticks(leads[1::2])
 
         add_figure_title(
-            fig, "Direct Niño-3.4 forecasting through the BSO framework "
-                 f"({HISTORY}-month index delay state, ERSSTv5)",
+            fig, "Direct Niño-3.4 forecasting through the BSO framework: "
+                 f"matched-state ladder ({HISTORY}-month memory, ERSSTv5)",
             y=LAYOUT_DIAGNOSTIC["title_y"])
         add_legend(fig, *rmse_ax.get_legend_handles_labels(),
                    loc=LAYOUT_DIAGNOSTIC["legend_loc"],
@@ -542,47 +894,57 @@ def plot(metrics, horizon, out_dir: Path):
     return pdf
 
 
-# Pruned to five curves: the full nine-curve diagnostic above stays as the
-# reference figure, and this one drops the linear control, the wide-dictionary
-# sensitivity curve, the propagated LIM and plain persistence.
+# Which reduced state the published figure reports. Both are computed; this
+# names the one shown, so the choice is a stated decision rather than whichever
+# happened to be plotted.
+PRESENTATION_STATE = "eof"
+# Which LIM the published figure shows. All three are computed and none is
+# ridge-tuned; naming the one plotted keeps it a stated choice.
+PRESENTATION_LIM = "lim_inst"
+
+# Four curves: the BSO, the classical LIM, and the two trivial references.
+#
+# The matched linear control, the propagated rollout, the MLP and the raw-delay
+# control are all computed and all reported by ``print_ladder``; they are kept
+# out of this figure deliberately. The consequence is that **this figure does
+# not on its own distinguish the learned dictionary from the state it is given**
+# -- that separation lives in the ladder table, and the caption points there
+# rather than claiming it here.
+#
 # Every curve's colour, dash pattern, weight, marker and draw order is stated
-# here, per the publication specification -- nothing is left to a Matplotlib
-# default. The BSO carries LINEWIDTH["main"]; climatology is a reference level
-# rather than a competing forecast and carries LINEWIDTH["reference"].
-# Direct FNO is purple rather than the diagnostic figure's orange: its curve
-# nearly coincides with the BSO's and red/orange do not separate cleanly.
-PRESENTATION_STYLE = {
-    "bso_direct_learned": dict(
-        label="BSO", color="#d62728", linestyle="-",
-        linewidth=LINEWIDTH["main"], marker="o", markersize=MARKER_SIZE,
-        markeredgewidth=MARKER_EDGE_WIDTH, alpha=1.0, zorder=5),
-    "direct_fno": dict(
-        label="FNO", color="#7b3294", linestyle="-",
-        linewidth=LINEWIDTH["data"], marker="s", markersize=MARKER_SIZE,
-        markeredgewidth=MARKER_EDGE_WIDTH, alpha=1.0, zorder=4),
-    "lim_direct": dict(
-        label="LIM", color="#1f77b4", linestyle="-",
-        linewidth=LINEWIDTH["data"], marker="^", markersize=MARKER_SIZE,
-        markeredgewidth=MARKER_EDGE_WIDTH, alpha=1.0, zorder=3),
-    "damped_persistence": dict(
-        label="Damped persistence", color="#2ca02c", linestyle="--",
-        linewidth=LINEWIDTH["data"], marker="None", markersize=MARKER_SIZE,
-        markeredgewidth=MARKER_EDGE_WIDTH, alpha=1.0, zorder=2),
-    "climatology": dict(
-        label="Climatology", color="#4d4d4d", linestyle=(0, (6, 4)),
-        linewidth=LINEWIDTH["reference"], marker="None",
-        markersize=MARKER_SIZE, markeredgewidth=MARKER_EDGE_WIDTH,
-        alpha=1.0, zorder=1),
-}
+# here, per the publication specification. The BSO carries LINEWIDTH["main"];
+# climatology is a reference level rather than a competing forecast.
+def presentation_style(state: str = PRESENTATION_STATE,
+                       lim: str = PRESENTATION_LIM) -> dict:
+    return {
+        f"bso_{state}": dict(
+            label="BSO", color="#d62728", linestyle="-",
+            linewidth=LINEWIDTH["main"], marker="o", markersize=MARKER_SIZE,
+            markeredgewidth=MARKER_EDGE_WIDTH, alpha=1.0, zorder=4),
+        lim: dict(
+            label="LIM", color="#1f77b4", linestyle="-",
+            linewidth=LINEWIDTH["data"], marker="^", markersize=MARKER_SIZE,
+            markeredgewidth=MARKER_EDGE_WIDTH, alpha=1.0, zorder=3),
+        "damped_persistence": dict(
+            label="Damped persistence", color="#2ca02c", linestyle="--",
+            linewidth=LINEWIDTH["data"], marker="None", markersize=MARKER_SIZE,
+            markeredgewidth=MARKER_EDGE_WIDTH, alpha=1.0, zorder=2),
+        "climatology": dict(
+            label="Climatology", color="#4d4d4d", linestyle=(0, (6, 4)),
+            linewidth=LINEWIDTH["reference"], marker="None",
+            markersize=MARKER_SIZE, markeredgewidth=MARKER_EDGE_WIDTH,
+            alpha=1.0, zorder=1),
+    }
+
 
 # 1x2 wide layout. Margins and gaps in inches; the bottom margin holds one
-# legend row plus the x-axis label.
+# legend row (four entries) plus the x-axis label.
 LAYOUT_PRESENTATION = {
     "figsize": (DOUBLE_COLUMN_WIDTH, 2.95), "nrows": 1, "ncols": 2,
     "left": 0.52, "right": 0.10, "bottom": 0.66, "top": 0.42,
     "wgap": 0.62, "hgap": 0.0,
     "title_y": 0.965, "legend_loc": "lower center",
-    "legend_bbox": (0.5, 0.005), "legend_ncol": 5,
+    "legend_bbox": (0.5, 0.005), "legend_ncol": 4,
 }
 
 
@@ -594,13 +956,34 @@ PRESENTATION_FILENAME = "nino34_forecast_skill.pdf"
 LONG_FILENAME = "nino34_forecast_skill_long.pdf"
 
 
+def _significant_spans(lower: np.ndarray) -> list[tuple[int, int]]:
+    """Contiguous lead ranges (1-based, inclusive) where the CI clears zero."""
+    ahead = np.asarray(lower) > 0.0
+    spans, start = [], None
+    for i, flag in enumerate(ahead):
+        if flag and start is None:
+            start = i
+        elif not flag and start is not None:
+            spans.append((start + 1, i))
+            start = None
+    if start is not None:
+        spans.append((start + 1, len(ahead)))
+    return spans
+
+
 def plot_presentation(metrics, horizon, out_dir: Path, *,
-                      filename: str = PRESENTATION_FILENAME) -> Path:
-    """Niño-3.4 RMSE (°C) and anomaly correlation for five methods.
+                      filename: str = PRESENTATION_FILENAME,
+                      state: str = PRESENTATION_STATE,
+                      lim: str = PRESENTATION_LIM) -> Path:
+    """Niño-3.4 RMSE (°C) and anomaly correlation, all on one reduced state.
 
     ``filename`` is explicit rather than inferred from ``horizon``: two runs at
     different horizons write two figures, and deriving the path from a threshold
     let one silently overwrite the other.
+
+    Four curves and one unlabelled ACC = 0.5 threshold; no significance
+    shading. The bootstrap interval on ``ACC(bso) - ACC(linear)`` is still
+    computed and still printed by :func:`print_ladder`; it is simply not drawn.
 
     Two properties of this curve set are handled here rather than left to the
     caption, because both would otherwise read as plotting bugs:
@@ -616,6 +999,7 @@ def plot_presentation(metrics, horizon, out_dir: Path, *,
       RMSE alone. Drawn dashed to mark it as the trivial reference.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
+    style = presentation_style(state, lim)
     leads = np.arange(1, horizon + 1)
     # Roughly six labelled ticks whatever the horizon: every 2 months at a
     # one-year lead, every 4 at two years.
@@ -624,7 +1008,7 @@ def plot_presentation(metrics, horizon, out_dir: Path, *,
     with publication_style():
         fig, axes = make_figure(LAYOUT_PRESENTATION)
         rmse_ax, acc_ax = axes[0, 0], axes[0, 1]
-        for name, kw in PRESENTATION_STYLE.items():
+        for name, kw in style.items():
             m = metrics[name]
             # Climatology's RMSE drifts across leads only because each lead
             # verifies a different set of target months -- a property of the
@@ -641,23 +1025,24 @@ def plot_presentation(metrics, horizon, out_dir: Path, *,
                    ylabel="RMSE (°C)", title="Error", grid=True)
         style_axis(acc_ax, xlabel="Forecast lead (months)",
                    ylabel="Anomaly correlation", title="Skill", grid=True)
+        # The conventional ACC = 0.5 skill threshold, drawn unlabelled: the
+        # value is readable off the y-axis, and an in-axes label costs more
+        # clutter than it earns.
         acc_ax.axhline(0.5, color=GRID_COLOR, linestyle=":",
                        linewidth=LINEWIDTH["reference"], zorder=0)
-        acc_ax.text(horizon, 0.52, "ACC = 0.5", ha="right", va="bottom",
-                    fontsize=8, color=TEXT_COLOR)
         # Follow the data downward rather than fixing the floor: at longer
         # horizons the trivial baselines go clearly negative, and a hard -0.1
         # limit clipped them mid-curve so they looked like they stopped. The
         # min() keeps the one-year figure at its existing -0.1.
         acc_min = min(float(np.nanmin(metrics[name]["nino34_acc"]))
-                      for name in PRESENTATION_STYLE if name != "climatology")
+                      for name in style if name != "climatology")
         acc_ax.set_ylim(min(-0.1, np.floor((acc_min - 0.05) * 10) / 10), 1.02)
         for ax in (rmse_ax, acc_ax):
             ax.set_xlim(1, horizon)
             ax.set_xticks(np.arange(step, horizon + 1, step))
 
-        # The RMSE panel carries all five methods, so its handles are complete.
-        add_figure_title(fig, "Niño-3.4 Forecast skill (ERSSTv5)",
+        # The RMSE panel carries every method, so its handles are complete.
+        add_figure_title(fig, "Niño-3.4 forecast skill (ERSSTv5)",
                          y=LAYOUT_PRESENTATION["title_y"])
         add_legend(fig, *rmse_ax.get_legend_handles_labels(),
                    loc=LAYOUT_PRESENTATION["legend_loc"],
@@ -668,90 +1053,178 @@ def plot_presentation(metrics, horizon, out_dir: Path, *,
     return pdf
 
 
+LADDER_ROWS = [
+    ("lim_prop", "LIM (propagated lag-1, OLS)"),
+    ("lim_wang", "LIM (Wang et al. t0=2, OLS)"),
+    ("lim_inst", "LIM (per-lead lagged, OLS)"),
+    ("lim_raw", "Linear control (raw 12x20 delay)"),
+    ("linear_index", "Linear (index state)"),
+    ("bso_index", "BSO (index state)"),
+    ("bso_prop_index", "BSO propagated rollout (index)"),
+    ("mlp_index", "MLP (index state)"),
+    ("linear_eof", "Linear (EOF state)"),
+    ("bso_eof", "BSO (EOF state)"),
+    ("bso_prop_eof", "BSO propagated rollout (EOF)"),
+    ("mlp_eof", "MLP (EOF state)"),
+    ("direct_fno", "FNO (full field, unmatched)"),
+    ("damped_persistence", "Damped persistence"),
+    ("climatology", "Climatology"),
+]
+
+
+def print_ladder(result: dict) -> None:
+    """The decision table: every rung, both metrics, and the claim's CI.
+
+    Printed rather than plotted because it is what the figure's design should be
+    read off, and because a table can carry rungs a six-curve figure cannot.
+    """
+    horizon = result["horizon"]
+    picks = [i for i in (1, 3, 6, 9, 12, 18, 24) if i <= horizon]
+    header = "".join(f"{i:>7d}" for i in picks)
+    counts = result["origins_per_lead"]
+
+    print(f"\n[enso-index] {result['n_fit']} fitting origins, "
+          f"{result['n_origins']} verification origins"
+          + ("" if counts is None else
+             f" ({counts[0]} at lead 1 falling to {counts[-1]} at lead "
+             f"{horizon})"))
+    for state_name, diag in result["diagnostics"].items():
+        print(f"[enso-index] {state_name:5s} state: dim {diag['state_dim']}, "
+              f"dictionary 1 + {diag['state_dim']} + {diag['n_learned']} = "
+              f"{diag['dictionary_size']}, invariance MSE "
+              f"{diag['invariance_mse']:.3e}, rho(K) "
+              f"{diag['transition_radius']:.4f}")
+
+    for metric, label in (("nino34_acc", "anomaly correlation"),
+                          ("nino34_rmse", "RMSE (°C)")):
+        print(f"\n[enso-index] Niño-3.4 {label} at leads{header}")
+        for key, name in LADDER_ROWS:
+            if key not in result["metrics"]:
+                continue
+            values = result["metrics"][key][metric]
+            print(f"  {name:30s}"
+                  + "".join(f"{values[i - 1]:7.2f}" for i in picks))
+
+    # The claim itself: dictionary minus its own matched linear control, with a
+    # block-bootstrap interval. A lead is only evidence for the dictionary if
+    # the interval clears zero there.
+    print(f"\n[enso-index] ACC(BSO) - ACC(linear control), same state, "
+          f"95% block bootstrap at leads{header}")
+    for state_name, (lower, upper) in result["intervals"].items():
+        delta = (result["metrics"][f"bso_{state_name}"]["nino34_acc"]
+                 - result["metrics"][f"linear_{state_name}"]["nino34_acc"])
+        print(f"  {state_name:5s} delta                   "
+              + "".join(f"{delta[i - 1]:7.2f}" for i in picks))
+        print(f"  {state_name:5s} 95% CI lower            "
+              + "".join(f"{lower[i - 1]:7.2f}" for i in picks))
+        print(f"  {state_name:5s} 95% CI upper            "
+              + "".join(f"{upper[i - 1]:7.2f}" for i in picks))
+        spans = _significant_spans(lower)
+        print(f"  {state_name:5s} dictionary is ahead of its control at leads "
+              + (", ".join(f"{a}–{b}" for a, b in spans) if spans else "none"))
+
+    ridges = result["ridges"]
+    print("\n[enso-index] selected ridge (min–max over leads), blocked CV:")
+    for key, name in LADDER_ROWS:
+        if key in ridges:
+            print(f"  {name:30s} {ridges[key].min():.2e} – "
+                  f"{ridges[key].max():.2e}")
+
+
+def figure_caption(result: dict, state: str, lim: str) -> str:
+    """One caption for whichever horizon was run, built from that run's numbers.
+
+    Shared by both figure branches: the earlier version emitted a caption only
+    on the 12-month path, so the figure that actually goes into the paper had
+    none and the crossover lead quoted in it came from a different run.
+
+    Descriptive rather than argumentative on purpose. It states what is plotted,
+    how each curve was fitted, and what the interval does and does not cover; it
+    does not nominate a winner. Where the record does not separate two methods,
+    the caption says so instead of picking one.
+    """
+    horizon = result["horizon"]
+    lower, _ = result["intervals"][state]
+    spans = _significant_spans(lower)
+    # The matched linear control is not drawn, so the figure cannot show whether
+    # the dictionary or the state is responsible. Reporting the interval in one
+    # sentence keeps the caption from implying an attribution the panels do not
+    # support; the full ladder is in the run's stdout.
+    separation = (
+        "A per-lead linear regression on the same state (not shown) is "
+        "separated from the BSO only at leads "
+        + ", ".join(f"{a}–{b}" for a, b in spans)
+        + " months by a 95 % block bootstrap on the paired difference"
+        if spans else
+        "A per-lead linear regression on the same state (not shown) is not "
+        "separated from the BSO at any lead by a 95 % block bootstrap on the "
+        "paired difference")
+
+    return (
+        f"Niño-3.4 forecast skill on ERSSTv5, leads 1–{horizon}. The BSO "
+        "forecasts the index directly: a reduced state — a training-fit "
+        f"{REDUCED_DIM}-dimensional PCA of the {HISTORY}-month delay embedding "
+        f"of {COMMON_MODES} weighted EOF coefficients — is advanced by a frozen "
+        "neural operator, a dictionary Ψ(z) = [1, z, h(z)] is fitted against "
+        "that operator by the Galerkin invariance objective, and per-lead "
+        "coefficients are regressed on the dictionary. LIM is the classical "
+        f"benchmark on the same {COMMON_MODES} EOF coefficients, fitted by "
+        "ordinary least squares: its regularisation is the PC truncation, so no "
+        "ridge is applied to it. Every method is fitted on the same origins and "
+        f"verified on the same launches. {separation}; the full comparison, "
+        "including that control, the propagated-operator rollout and a "
+        "matched-input network, is reported in the accompanying table. "
+        "Climatology has undefined anomaly correlation (a zero-anomaly forecast "
+        "has zero variance) so it appears in the error panel alone, drawn as "
+        "its lead-average. Damped persistence has exactly the correlation of "
+        "plain persistence, because correlation is invariant to the positive "
+        "per-lead scaling γ^τ; damping is visible in RMSE only.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--quick", action="store_true")
     parser.add_argument(
-        "--long", action="store_true",
-        help=f"score out to {LONG_HORIZON} months instead of {HORIZON}, into a "
-             f"separate figure ({LONG_FILENAME}). Each lead is verified on "
-             "every origin that still has an observed target, so the sample "
-             "shrinks with lead; the direct FNO is retrained because its head "
+        "--ladder", action="store_true",
+        help="print the matched-state ladder and the bootstrap interval on the "
+             "claim, and write no figure. This is the table the figure's design "
+             "should be read off.")
+    parser.add_argument(
+        "--long-only", action="store_true",
+        help=f"write only the {LONG_HORIZON}-month figure ({LONG_FILENAME}) "
+             f"and skip the {HORIZON}-month one. Both are produced by default. "
+             "At the longer horizon each lead is verified on every origin that "
+             "still has an observed target, so the sample shrinks with lead, "
+             "and the direct FNO and the MLPs are retrained because their head "
              "count is the horizon.")
     args = parser.parse_args()
-    if args.long:
-        result = run(args.quick, horizon=LONG_HORIZON, ragged=True)
-        counts = result["origins_per_lead"]
-        horizon = result["horizon"]
-        pdf = plot_presentation(result["metrics"], horizon,
-                                FIGURES_DIR / "enso", filename=LONG_FILENAME)
-        print(f"\n[enso-index] {horizon}-month figure written to {pdf}")
-        print(f"[enso-index] verifying origins fall from {counts[0]} at lead 1 "
-              f"to {counts[-1]} at lead {horizon}")
-        acc = result["metrics"]["bso_direct_learned"]["nino34_acc"]
-        below = np.flatnonzero(acc < 0.5)
-        print("[enso-index] BSO Niño-3.4 ACC drops below 0.5 at lead "
-              f"{int(below[0]) + 1}" if len(below) else
-              "[enso-index] BSO ACC stays above 0.5 across all leads")
-        picks = [i for i in (1, 6, 12, 18, 24) if i <= horizon]
-        print("[enso-index] Niño-3.4 ACC at leads "
-              + ", ".join(str(i) for i in picks) + ":")
-        for name, m in result["metrics"].items():
-            print(f"  {name:24s} "
-                  + " ".join(f"{m['nino34_acc'][i - 1]:6.2f}" for i in picks))
+
+    if args.ladder:
+        print_ladder(run(args.quick, horizon=LONG_HORIZON, ragged=True))
         return
-    result = run(args.quick)
-    pdf = plot(result["metrics"], result["horizon"], FIGURES_DIR / "enso")
-    talk_pdf = plot_presentation(result["metrics"], result["horizon"],
-                                 FIGURES_DIR / "enso")
-    print(f"\n[enso-index] dictionary 1 + {HISTORY} + "
-          f"{result['n_learned']} = {result['dictionary_size']} functions")
-    print(f"[enso-index] phase-B invariance MSE = "
-          f"{result['invariance_mse']:.4e}, rho(K) = "
-          f"{result['transition_radius']:.4f}")
-    print(f"[enso-index] {result['n_fit']} fitting origins, "
-          f"{result['n_origins']} verification origins, "
-          f"gamma = {result['gamma']:.3f}")
-    print("[enso-index] Niño-3.4 anomaly correlation by method (lead 1..H):")
-    for name, m in result["metrics"].items():
-        acc = " ".join(f"{v:5.2f}" for v in m["nino34_acc"])
-        print(f"  {name:22s} {acc}")
-    print("[enso-index] Niño-3.4 RMSE (°C) by method (lead 1..H):")
-    for name, m in result["metrics"].items():
-        rmse = " ".join(f"{v:5.2f}" for v in m["nino34_rmse"])
-        print(f"  {name:22s} {rmse}")
-    # Whether the EEG-parity width drives the result, stated as a number rather
-    # than left to the eye.
-    narrow, wide = (result["metrics"]["bso_direct_learned"],
-                    result["metrics"]["bso_direct_learned_w64"])
-    print(f"[enso-index] dictionary width {HIDDEN_DIMS} (headline, = EEG) vs "
-          f"{WIDE_HIDDEN_DIMS}: max |ΔACC| = "
-          f"{np.nanmax(np.abs(narrow['nino34_acc'] - wide['nino34_acc'])):.3f}, "
-          f"max |ΔRMSE| = "
-          f"{np.nanmax(np.abs(narrow['nino34_rmse'] - wide['nino34_rmse'])):.3f} °C")
-    print(f"[enso-index] figure written to {pdf}")
-    print(f"[enso-index] presentation figure written to {talk_pdf}")
-    # State the crossover from the numbers rather than by eye, so the caption
-    # cannot drift out of step with a rerun.
-    acc = result["metrics"]["bso_direct_learned"]["nino34_acc"]
-    ref = result["metrics"]["lim_direct"]["nino34_acc"]
-    ahead = np.where(acc > ref)[0]
-    crossover = (f"is the stronger method through lead {int(ahead[0])}, after "
-                 "which the BSO leads" if len(ahead)
-                 else "is the stronger method at every lead shown")
-    print_figure_caption(
-        "Niño-3.4 forecast skill on ERSSTv5. The BSO forecasts the index "
-        "directly: a 12-month Niño-3.4 delay state is advanced by a frozen "
-        "neural operator, a dictionary is fitted to it by the Galerkin "
-        "invariance objective, and per-lead coefficients are regressed on that "
-        "dictionary. Direct lagged LIM is the matched linear counterpart — the "
-        f"same per-lead regression on 20 EOF coefficients — and {crossover}. "
-        "Climatology has undefined anomaly "
-        "correlation (a zero-anomaly forecast has zero variance) so it appears "
-        "in the error panel alone, drawn as its lead-average. Damped "
-        "persistence has exactly the correlation of plain persistence, because "
-        "correlation is invariant to the positive per-lead scaling γ^τ; damping "
-        "is visible in RMSE only.")
+
+    # Both lead ranges, from two runs rather than one truncated to the other:
+    # ``fit_origins`` reserves ``horizon`` months of target, so the two are
+    # fitted on slightly different samples and neither is a slice of the other.
+    plans = [(LONG_HORIZON, True, LONG_FILENAME)]
+    if not args.long_only:
+        plans.insert(0, (4 if args.quick else HORIZON, False,
+                         PRESENTATION_FILENAME))
+
+    for horizon, ragged, filename in plans:
+        result = run(args.quick, horizon=horizon, ragged=ragged)
+        horizon = result["horizon"]
+        talk_pdf = plot_presentation(
+            result["metrics"], horizon, FIGURES_DIR / "enso",
+            filename=filename, state=PRESENTATION_STATE,
+            lim=PRESENTATION_LIM)
+        print_ladder(result)
+        print(f"\n[enso-index] {horizon}-month figure written to {talk_pdf}")
+        if filename == PRESENTATION_FILENAME:
+            pdf = plot(result["metrics"], horizon, FIGURES_DIR / "enso")
+            print(f"[enso-index] diagnostic figure written to {pdf}")
+        print_figure_caption(
+            figure_caption(result, PRESENTATION_STATE, PRESENTATION_LIM))
 
 
 if __name__ == "__main__":
