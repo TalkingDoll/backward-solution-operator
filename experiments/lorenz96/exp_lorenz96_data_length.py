@@ -1,13 +1,13 @@
 """Lorenz-96 increasing-data experiment: BNO vs. Data EDMD as N crosses M.
 
-Standard chaotic Lorenz-96 (``K=40`` sites, ``F=8``). The target operator
-dimension is ``M=40`` -- the full observed state -- so a plain data EDMD needs
-at least 40 transition pairs, while the BNO (``run_bso_pipeline``) forms its
-40x40 Galerkin matrix from the frozen FNO acting on the dictionary over the
-sampling measure and is defined at every ``N``.
+Standard chaotic Lorenz-96 (state dimension d=40, F=8). The target
+operator rank M is selectable between 20 and 40. A plain data EDMD needs at
+least M transition pairs, while the BNO (run_bso_pipeline) forms its Galerkin
+matrix from the frozen FNO acting on the dictionary over the sampling measure
+and is defined at every N.
 
 Usage:
-    python -m experiments.lorenz96.exp_lorenz96_data_length [--quick]
+    python -m experiments.lorenz96.exp_lorenz96_data_length [--quick] [--target-m {20,40}]
 """
 
 from __future__ import annotations
@@ -20,7 +20,8 @@ import numpy as np
 
 sys.dont_write_bytecode = True
 
-from experiments._data_length import plot_two_versions, run_sweep, save_result
+from experiments._data_length import (plot_one_step, plot_two_versions,
+                                      run_sweep, save_result)
 from kbe_observation_data import generate_kbe_dataset
 from project_paths import FIGURES_DIR, RESULTS_DIR
 
@@ -38,6 +39,24 @@ LENGTHS = (10, 20, 30, 40, 60, 100, 200, 400)
 SEEDS = (2026, 2027, 2028, 2029, 2030)
 QUICK_LENGTHS = (20, 60)
 QUICK_SEEDS = (2026,)
+REFERENCE_TITLE_SUFFIX = "(d=40, F=8)"
+
+
+def result_path(target_m: int) -> Path:
+    filename = ("l96_data_length_results.npz" if target_m == TARGET_M else
+                f"l96_data_length_m{target_m}_results.npz")
+    return RESULTS_DIR / "l96_data_length" / filename
+
+
+def plot_reference_figure(result) -> Path:
+    """Write the median-only best-feasible-rank reference figure."""
+    filename_tag = ("" if result.target_M == TARGET_M else
+                    f"_m{result.target_M}")
+    return plot_one_step(
+        result, FIGURES_DIR / "lorenz96", "Lorenz-96",
+        title_suffix=REFERENCE_TITLE_SUFFIX, bands=False, variant="npairs",
+        filename_tag=filename_tag, xlabel="Number of training pairs n",
+        rank_labels=True, annotate_target=False)
 
 
 def _model_kwargs(quick: bool) -> dict:
@@ -88,7 +107,10 @@ def _test_traj(readings: np.ndarray, n_origins: int, horizon: int) -> np.ndarray
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--quick", action="store_true")
+    parser.add_argument("--target-m", type=int, choices=(20, 40), default=40,
+                        help="target dictionary/operator rank (default: 40)")
     args = parser.parse_args()
+    target_m = int(args.target_m)
 
     lengths = QUICK_LENGTHS if args.quick else LENGTHS
     seeds = QUICK_SEEDS if args.quick else SEEDS
@@ -105,11 +127,14 @@ def main() -> None:
         return dict(dataset, u0=u0, uT=uT, u2T=u2T)
 
     def cfg_builder(n_pairs: int, seed: int) -> dict:
-        return dict(
+        cfg = dict(
             seed=int(seed), operator="fno",
             model_kwargs=_model_kwargs(args.quick),
-            train_kwargs=_train_kwargs(args.quick), n_basis=TARGET_M,
+            train_kwargs=_train_kwargs(args.quick), n_basis=target_m,
             joint_kwargs=_joint_kwargs(args.quick), reg_alpha=1e-5)
+        if target_m != TARGET_M:
+            cfg["bso_file"] = f"bso_m{target_m}.pt"
+        return cfg
 
     ckpt_root = (None if args.quick
                  else RESULTS_DIR / "l96_data_length" / "checkpoints")
@@ -122,19 +147,24 @@ def main() -> None:
         system=SYSTEM, make_dataset_n=make_dataset_n, test_traj=test_traj,
         weights=np.asarray(dataset["weights"], dtype=np.float64),
         kind=str(dataset["kind"]), cfg_builder=cfg_builder,
-        target_M=TARGET_M, lengths=lengths, seeds=seeds,
+        target_M=target_m, lengths=lengths, seeds=seeds,
         checkpoint_root=ckpt_root, reg_alpha=REG_ALPHA,
         bso_source="ensemble")
 
-    out_results = RESULTS_DIR / "l96_data_length"
     out_figures = FIGURES_DIR / "lorenz96"
-    save_result(result, out_results / "l96_data_length_results.npz")
+    save_result(result, result_path(target_m))
     # Valid-prediction-time is not plotted here: at tau=0.02 every method's
     # horizon collapses into {0.00 ... 0.12}, six steps of resolution, so the
     # metric cannot separate them. ``plot_valid_time`` is still used by the
     # ENSO and EEG drivers, whose step sizes give it room.
-    pdfs = plot_two_versions(result, out_figures, "Lorenz-96",
-                             title_suffix="(K=40, F=8)")
+    if target_m == TARGET_M:
+        # Preserve the original default command's two banded outputs. The
+        # publication reference is handled separately by the rank-selectable
+        # replot entry point.
+        pdfs = plot_two_versions(result, out_figures, "Lorenz-96",
+                                 title_suffix="(K=40, F=8)")
+    else:
+        pdfs = (plot_reference_figure(result),)
     print(f"[lorenz96:data-length] figures: {[str(p) for p in pdfs]}")
 
 

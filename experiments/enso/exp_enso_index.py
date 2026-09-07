@@ -28,7 +28,10 @@ so the two together separate skill from parameter count.
 ``bso_prop`` is the rung the published figure draws, because it is the only one
 with an equivalent in the EEG figure: the per-lead form is the KAF construction
 and a different estimator, and showing it under the same name in two papers'
-figures would conflate the two. ``PRESENTATION_RUNG`` names the choice.
+figures would conflate the two. The figure compares it with a LIM propagated on
+the **identical reduced EOF-delay state**, so state information, memory, fitting
+pairs and the fixed Niño-3.4 readout are matched. ``PRESENTATION_RUNG`` and
+``PRESENTATION_STATE`` name those choices.
 
 Everything reverts to zero anomaly
 ----------------------------------
@@ -44,17 +47,19 @@ rather than offset.
 
 Equal information, one varying factor
 -------------------------------------
-Every forecast rung below is fitted on the **same predictor state**, over the
-same origins, with its ridge selected by the same protocol. That is the whole
-point of the module: an earlier version gave the BSO a 12-month delay state
-while its baselines saw a single month, so the reported margin measured memory,
-not the dictionary. The ladder separates the factors instead:
+The presentation pair is fitted on the **same predictor state** and the same
+one-month transitions. That is the whole point of the final figure: an earlier
+version gave the BSO a 12-month delay state while its plotted LIM saw a single
+month of a different state, so the reported gap mixed information and method.
+The broader diagnostic ladder retains deliberately unmatched reference rows but
+separates the factors explicitly:
 
 ===========  ======================================  ==========================
 rung         predictors                              isolates
 ===========  ======================================  ==========================
 ``lim_prop`` propagated ``G(tau)`` on 20 PCs         the classical benchmark
 ``lim_wang`` Wang et al. ``tau0 = 2``                the published variant
+``lim_matched_eof`` propagated ``G^n`` on ``z_eof``  the matched figure baseline
 ``lim_inst`` ``[1, c(t)]``, 20 EOFs, one month       its per-lead counterpart
 ``lim_raw``  ``[1, X(t)]``, 12 x 20 delay            what memory alone buys
 ``linear_*`` ``[1, z(t)]``, the reduced state        what the compression buys
@@ -155,6 +160,12 @@ TRANSITION_RIDGE = 1e-6
 # MLP reuses the same widths, so "learned dictionary vs. generic net" cannot be a
 # capacity comparison in disguise.
 HIDDEN_DIMS = (16, 16)
+
+# The state shared by the two methods in the final presentation figure.  Keep
+# the metric key explicit so a state change cannot silently leave the old LIM
+# curve in place.
+MATCHED_STATE = "eof"
+MATCHED_LIM_KEY = f"lim_matched_{MATCHED_STATE}"
 
 # Verification uncertainty. Monthly origins overlap heavily -- the record holds
 # roughly one independent ENSO event per two years -- so a plain bootstrap over
@@ -471,9 +482,8 @@ def propagated_forecast(psi: np.ndarray, transition: np.ndarray,
     This is ``eeg_operator_bso.rollout_operator_bso`` transposed to ENSO: push
     the dictionary forward with the Galerkin operator, slice the fixed state
     coordinates ``Psi[:, 1:1+state_dim]`` back out, and reconstruct through the
-    *fixed* inverse state map. Nothing is fitted per lead, and nothing is fitted
-    to the index at all -- the whole forecast is ``K`` plus a map that was
-    determined before any forecasting began.
+    *fixed* inverse state map. No lead-specific index regression or readout is
+    fitted -- the forecast is ``K`` plus a map fixed before forecasting began.
 
     That makes it the only rung here with an equivalent in the published EEG
     figure, and the reason to prefer it over a fitted linear readout of ``Psi``:
@@ -491,6 +501,41 @@ def propagated_forecast(psi: np.ndarray, transition: np.ndarray,
         features = features @ transition
         out.append(readout(features[:, 1:stop]))
     return np.stack(out, axis=1)
+
+
+def matched_lim_forecast(states: np.ndarray, readout, train_end: int,
+                         origins: np.ndarray, horizon: int, *,
+                         history: int = HISTORY,
+                         ridge: float = TRANSITION_RIDGE):
+    """Fit and propagate a LIM on exactly the BSO's reduced state.
+
+    The fit uses the same complete one-month transitions as phases A and B:
+    state rows ``history - 1 ... train_end - 2`` predict the following rows.
+    Forecasts start from the same verification rows and use the same fixed
+    inverse-state/Niño-3.4 readout as :func:`propagated_forecast`. Thus the
+    comparison changes the hypothesis class, not the information, memory,
+    sample window or output map.
+
+    Returns ``(prediction, G)`` so diagnostics and tests can inspect the fitted
+    transition without refitting it.
+    """
+    states = np.asarray(states, dtype=np.float64)
+    origins = np.asarray(origins, dtype=int)
+    first = int(history) - 1
+    train_end = int(train_end)
+    if first < 0 or train_end <= first + 1:
+        raise ValueError("matched LIM has fewer than two complete training states")
+    fit_states = states[first:train_end]
+    if not np.all(np.isfinite(fit_states)):
+        raise ValueError("matched LIM training state contains non-finite values")
+    if not np.all(np.isfinite(states[origins])):
+        raise ValueError("matched LIM launch state contains non-finite values")
+
+    transition = fit_lim(fit_states, ridge=float(ridge))
+    rollout = lim_forecast(transition, states[origins], int(horizon))
+    prediction = np.stack(
+        [readout(rollout[:, lead]) for lead in range(int(horizon))], axis=1)
+    return prediction, transition
 
 
 class DirectMLP(nn.Module):
@@ -668,13 +713,9 @@ def run(quick: bool, horizon: int | None = None, ragged: bool = False) -> dict:
     a handful of launches. It is off at the default horizon so those numbers are
     unaffected.
 
-    The classical LIM appears here as ``lim_inst``, the per-lead lagged
-    regression on instantaneous EOF coefficients, rather than as the propagated
-    lag-1 propagator used by ``exp_enso``. Two reasons: it is the stronger of the
-    two on this record, so the baseline is not weakened for convenience; and it
-    is fitted on ``fit_origins`` like everything else, whereas the propagated
-    variant is estimated from every training month and so would not share the
-    sample.
+    The final presentation pair uses the identical ``eof`` reduced state,
+    one-month transition rows and fixed readout. Other ladder rows intentionally
+    retain their literature-specific or diagnostic fitting conventions.
     """
     data = load_ersstv5(DATA_PATH)
     if horizon is None:
@@ -701,8 +742,8 @@ def run(quick: bool, horizon: int | None = None, ragged: bool = False) -> dict:
         mask = None
         truth_n34 = np.stack([index[origins + lead]
                               for lead in range(1, horizon + 1)], axis=1)
-    # One fitting origin set for every rung, so no method is fitted on more
-    # months than another.
+    # Shared fitting origins for every per-lead regression. Propagated models
+    # instead use all complete one-month transitions before ``train_end``.
     fit_origins = np.arange(HISTORY - 1, data.train_end - horizon)
 
     metrics, ridges, predictions = {}, {}, {}
@@ -771,6 +812,15 @@ def run(quick: bool, horizon: int | None = None, ragged: bool = False) -> dict:
             growth=[float(np.linalg.norm(np.linalg.matrix_power(K, n), 2))
                     for n in range(1, horizon + 1)])
 
+    # --- propagated LIM on exactly the final figure's BSO state ------------
+    matched_state, matched_readout = states[MATCHED_STATE]
+    matched_prediction, matched_transition = matched_lim_forecast(
+        matched_state, matched_readout, data.train_end, origins, horizon,
+        history=HISTORY, ridge=TRANSITION_RIDGE)
+    _score(MATCHED_LIM_KEY, matched_prediction)
+    matched_lim_radius = float(
+        np.max(np.abs(np.linalg.eigvals(matched_transition))))
+
     # --- the LIM baselines, fitted as the literature defines them ---------
     # No ridge selection here, deliberately. A LIM is
     # ``G(tau) = C(tau) C(0)^-1`` on a truncated PC basis: the truncation to
@@ -837,7 +887,8 @@ def run(quick: bool, horizon: int | None = None, ragged: bool = False) -> dict:
     return dict(data=data, horizon=horizon, metrics=metrics, gamma=gamma,
                 predictions=predictions, ridges=ridges, intervals=intervals,
                 figure_interval=figure_interval,
-                diagnostics=diagnostics, n_origins=len(origins),
+                diagnostics=diagnostics,
+                matched_lim_radius=matched_lim_radius, n_origins=len(origins),
                 ragged=bool(ragged), n_fit=len(fit_origins),
                 origins_per_lead=(None if mask is None
                                   else mask.sum(axis=0).astype(int)))
@@ -853,13 +904,11 @@ def run(quick: bool, horizon: int | None = None, ragged: bool = False) -> dict:
 # this rung the second variance is the larger one past lead 12, and reporting only
 # the first would understate the uncertainty.
 #
-# Through lead SEED_SPREAD_STABLE_THROUGH the three runs agree to within
-# SEED_SPREAD_TOLERANCE ACC. Past it they do not: lead 24 spans
-# SEED_SPREAD_LONG_RANGE. The figure plots one seed, so the caption states this.
+# ``print_seed_spread`` derives every range from the fitted rows rather than from
+# hard-coded caption values, so switching the presentation state cannot silently
+# attach one state's uncertainty to another.
 SEED_SPREAD_SEEDS = (2026, 7, 12345)
-SEED_SPREAD_STABLE_THROUGH = 9
 SEED_SPREAD_TOLERANCE = 0.03
-SEED_SPREAD_LONG_RANGE = (0.14, 0.34)
 
 
 def seed_spread(quick: bool, horizon: int | None = None,
@@ -1052,9 +1101,12 @@ def plot(metrics, horizon, out_dir: Path):
             ax.set_xlim(1, horizon)
             ax.set_xticks(leads[1::2])
 
+        # Kept under the 7.0 in width deliberately: the previous wording measured
+        # 7.60 in at 10 pt and was clipped at both ends, which no automatic layout
+        # would have caught because the specification forbids bbox_inches="tight".
         add_figure_title(
-            fig, "Direct Niño-3.4 forecasting through the BSO framework: "
-                 f"matched-state ladder ({HISTORY}-month memory, ERSSTv5)",
+            fig, "Direct Niño-3.4 forecasting: the matched-state ladder "
+                 f"({HISTORY}-month memory, ERSSTv5)",
             y=LAYOUT_DIAGNOSTIC["title_y"])
         add_legend(fig, *rmse_ax.get_legend_handles_labels(),
                    loc=LAYOUT_DIAGNOSTIC["legend_loc"],
@@ -1068,32 +1120,29 @@ def plot(metrics, horizon, out_dir: Path):
 
 # Which reduced state the published figure reports. Both are computed; this
 # names the one shown, so the choice is a stated decision rather than whichever
-# happened to be plotted. ``index`` is the state whose forecast target is itself
-# a coordinate, so the propagated rung's readout is a coordinate slice -- the
-# most literal transcription of ``rollout_operator_bso``, which reads its last
-# ``lag`` samples straight out of the reconstructed history.
-PRESENTATION_STATE = "index"
+# happened to be plotted. ``eof`` is the training-fit 12-dimensional PCA of the
+# 12-month delay embedding of 20 EOF coefficients. The matched LIM is fit and
+# launched on these exact state rows and uses the same fixed inverse map.
+PRESENTATION_STATE = MATCHED_STATE
 # Which BSO rung. ``bso_prop`` is the propagated Galerkin operator: the same
-# construction as the published EEG rollout, with nothing fitted per lead and
-# nothing fitted to the index at all. The per-lead ``bso_`` rung is the KAF
-# variant; it is a different estimator and would not be the EEG figure's object,
-# so naming the rung here keeps the two from being confused under one label.
+# construction as the published EEG rollout, with no lead-specific regression or
+# readout. The per-lead ``bso_`` rung is the KAF variant; it is a different
+# estimator and would not be the EEG figure's object, so naming the rung here
+# keeps the two from being confused under one label.
 PRESENTATION_RUNG = "bso_prop"
-# Which LIM. ``lim_wang`` is the only one of the three that is the referenced
-# paper (Wang, Slawinska & Giannakis 2020, Eqs. 6/7/11/12); ``lim_prop`` is a
-# lag-1 variant and ``lim_inst`` is a per-lead regression that ``enso_lim``
-# documents as not a LIM. It is also the structural match for a propagated BSO:
-# both advance an operator and read the index out, neither fits per lead.
-PRESENTATION_LIM = "lim_wang"
+# Which LIM. This one is fit on the identical reduced EOF-delay state, training
+# transitions and fixed readout as the BSO above. The Wang et al. LIM remains in
+# the diagnostic ladder but is deliberately absent from the final figure because
+# it receives different information.
+PRESENTATION_LIM = MATCHED_LIM_KEY
 
-# Four curves: the BSO, the paper's LIM, and the two trivial references.
+# Four curves: BSO, its matched-state LIM, and two trivial references.
 #
 # The matched linear control, the per-lead dictionary rung, the MLP and the
 # raw-delay control are all computed and all reported by ``print_ladder``; they
-# are kept out of this figure deliberately. The consequence is that **this figure
-# does not on its own distinguish the learned dictionary from the state it is
-# given** -- that separation lives in the ladder table, and the caption reports
-# the BSO-against-LIM interval, which is what the panels actually show.
+# are kept out deliberately. The presentation pair shares its full predictor
+# state, memory, transition window and output map; its difference is the nonlinear
+# BSO pipeline versus a linear state propagator.
 #
 # Every curve's colour, dash pattern, weight, marker and draw order is stated
 # here, per the publication specification. The BSO carries LINEWIDTH["main"];
@@ -1107,7 +1156,7 @@ def presentation_style(state: str = PRESENTATION_STATE,
             linewidth=LINEWIDTH["main"], marker="o", markersize=MARKER_SIZE,
             markeredgewidth=MARKER_EDGE_WIDTH, alpha=1.0, zorder=4),
         lim: dict(
-            label="LIM", color="#1f77b4", linestyle="-",
+            label="Matched LIM", color="#1f77b4", linestyle="-",
             linewidth=LINEWIDTH["data"], marker="^", markersize=MARKER_SIZE,
             markeredgewidth=MARKER_EDGE_WIDTH, alpha=1.0, zorder=3),
         "damped_persistence": dict(
@@ -1141,19 +1190,25 @@ PRESENTATION_FILENAME = "nino34_forecast_skill.pdf"
 LONG_FILENAME = "nino34_forecast_skill_long.pdf"
 
 
-def _significant_spans(lower: np.ndarray) -> list[tuple[int, int]]:
-    """Contiguous lead ranges (1-based, inclusive) where the CI clears zero."""
-    ahead = np.asarray(lower) > 0.0
+def _contiguous_spans(flags: np.ndarray) -> list[tuple[int, int]]:
+    """Contiguous true ranges, using 1-based inclusive lead numbers."""
+    flags = np.asarray(flags, dtype=bool)
     spans, start = [], None
-    for i, flag in enumerate(ahead):
+    for i, flag in enumerate(flags):
         if flag and start is None:
             start = i
         elif not flag and start is not None:
             spans.append((start + 1, i))
             start = None
     if start is not None:
-        spans.append((start + 1, len(ahead)))
+        spans.append((start + 1, len(flags)))
     return spans
+
+
+def _separation_spans(lower: np.ndarray, upper: np.ndarray):
+    """Pointwise intervals favoring the first and second forecast, respectively."""
+    return (_contiguous_spans(np.asarray(lower) > 0.0),
+            _contiguous_spans(np.asarray(upper) < 0.0))
 
 
 def plot_presentation(metrics, horizon, out_dir: Path, *,
@@ -1172,11 +1227,11 @@ def plot_presentation(metrics, horizon, out_dir: Path, *,
     dictionary-against-its-control one -- are still computed and still printed by
     :func:`print_ladder`; they are simply not drawn.
 
-    Both forecast curves revert to zero anomaly, so the error panel compares
-    error rather than offset. That parity is the point of the state and readout
-    conventions in :func:`index_delay_states` and ``enso_lim.WangLIM``; without it
-    the BSO carried a cold bias reaching -0.47 °C and lost the RMSE panel on bias
-    alone while having the lower error variance.
+    Both forecasts start from the same uncentred EOF-delay PCA state, use the
+    same one-month fitting transitions, and reconstruct Niño-3.4 through the
+    same offset-free inverse map. They therefore revert to zero anomaly and the
+    error panel compares hypothesis classes rather than information or output
+    conventions.
 
     Two properties of this curve set are handled here rather than left to the
     caption, because both would otherwise read as plotting bugs:
@@ -1235,7 +1290,7 @@ def plot_presentation(metrics, horizon, out_dir: Path, *,
             ax.set_xticks(np.arange(step, horizon + 1, step))
 
         # The RMSE panel carries every method, so its handles are complete.
-        add_figure_title(fig, "Niño-3.4 forecast skill (ERSSTv5)",
+        add_figure_title(fig, "Matched-state Niño-3.4 forecast skill (ERSSTv5)",
                          y=LAYOUT_PRESENTATION["title_y"])
         add_legend(fig, *rmse_ax.get_legend_handles_labels(),
                    loc=LAYOUT_PRESENTATION["legend_loc"],
@@ -1249,6 +1304,7 @@ def plot_presentation(metrics, horizon, out_dir: Path, *,
 LADDER_ROWS = [
     ("lim_prop", "LIM (propagated lag-1, OLS)"),
     ("lim_wang", "LIM (Wang et al. t0=2, OLS)"),
+    (MATCHED_LIM_KEY, "LIM (matched EOF-delay state)"),
     ("lim_inst", "LIM (per-lead lagged, OLS)"),
     ("lim_raw", "Linear control (raw 12x20 delay)"),
     ("linear_index", "Linear (index state)"),
@@ -1312,9 +1368,13 @@ def print_ladder(result: dict) -> None:
               + "".join(f"{lower[i - 1]:7.2f}" for i in picks))
         print(f"  {state_name:5s} 95% CI upper            "
               + "".join(f"{upper[i - 1]:7.2f}" for i in picks))
-        spans = _significant_spans(lower)
+        bso_spans, control_spans = _separation_spans(lower, upper)
         print(f"  {state_name:5s} dictionary is ahead of its control at leads "
-              + (", ".join(f"{a}–{b}" for a, b in spans) if spans else "none"))
+              + (", ".join(f"{a}–{b}" for a, b in bso_spans)
+                 if bso_spans else "none"))
+        print(f"  {state_name:5s} control is ahead of the dictionary at leads "
+              + (", ".join(f"{a}–{b}" for a, b in control_spans)
+                 if control_spans else "none"))
 
     # What the published figure actually shows, which is the other comparison:
     # the propagated operator against the paper's LIM.
@@ -1327,9 +1387,13 @@ def print_ladder(result: dict) -> None:
     for label, row in (("delta", delta), ("95% CI lower", lower),
                        ("95% CI upper", upper)):
         print(f"  {label:24s}" + "".join(f"{row[i - 1]:7.2f}" for i in picks))
-    spans = _significant_spans(lower)
+    bso_spans, lim_spans = _separation_spans(lower, upper)
     print("  BSO is ahead of the LIM at leads "
-          + (", ".join(f"{a}–{b}" for a, b in spans) if spans else "none"))
+          + (", ".join(f"{a}–{b}" for a, b in bso_spans)
+             if bso_spans else "none"))
+    print("  LIM is ahead of the BSO at leads "
+          + (", ".join(f"{a}–{b}" for a, b in lim_spans)
+             if lim_spans else "none"))
 
     ridges = result["ridges"]
     print("\n[enso-index] selected ridge (min–max over leads), blocked CV:")
@@ -1341,82 +1405,11 @@ def print_ladder(result: dict) -> None:
 
 def figure_caption(result: dict, state: str, lim: str,
                    rung: str = PRESENTATION_RUNG) -> str:
-    """One caption for whichever horizon was run, built from that run's numbers.
-
-    Shared by both figure branches: the earlier version emitted a caption only
-    on the 12-month path, so the figure that actually goes into the paper had
-    none and the crossover lead quoted in it came from a different run.
-
-    Descriptive rather than argumentative on purpose. It states what is plotted,
-    how each curve was fitted, and what the interval does and does not cover; it
-    does not nominate a winner. Where the record does not separate two methods,
-    the caption says so instead of picking one.
-
-    Parameterised by ``state`` and ``rung`` rather than describing one hardcoded
-    construction: an earlier version took ``state`` but spelled out the EOF
-    delay-PCA state and the per-lead regression regardless, so changing either
-    presentation constant silently produced a caption for a figure that was not
-    drawn.
-    """
-    horizon = result["horizon"]
-    lower, _ = result["figure_interval"]
-    spans = _significant_spans(lower)
-    # Two uncertainties, both stated, because they measure different things: the
-    # bootstrap resamples verification origins with the operator held fixed, and
-    # the seed range holds the origins fixed and refits. Past lead
-    # SEED_SPREAD_STABLE_THROUGH the second is the larger of the two.
-    ahead = (
-        "The BSO is separated from it at leads "
-        + ", ".join(f"{a}–{b}" for a, b in spans)
-        + " months by a 95 % block bootstrap on the paired per-lead difference"
-        if spans else
-        "The two are not separated at any lead by a 95 % block bootstrap on the "
-        "paired per-lead difference: on this record, with this information, the "
-        "neural-operator forecast matches the classical benchmark rather than "
-        "beating it")
-    seed_note = (
-        f" A single training seed is plotted; retraining changes long-lead "
-        f"correlation appreciably while leaving leads 1–{SEED_SPREAD_STABLE_THROUGH} "
-        f"within {SEED_SPREAD_TOLERANCE:.2f} ACC, with lead {horizon} spanning "
-        f"{SEED_SPREAD_LONG_RANGE[0]:.2f}–{SEED_SPREAD_LONG_RANGE[1]:.2f} over "
-        f"{len(SEED_SPREAD_SEEDS)} seeds, so the long-lead values should be read "
-        "as indicative rather than as point estimates."
-        if horizon > SEED_SPREAD_STABLE_THROUGH else "")
-
-    predictor = ("the " if state == "index" else "a ") + (
-        f"{HISTORY}-month Niño-3.4 history"
-        if state == "index" else
-        f"training-fit {REDUCED_DIM}-dimensional PCA of the {HISTORY}-month "
-        f"delay embedding of {COMMON_MODES} weighted EOF coefficients")
-    forecast = (
-        "every lead is then obtained by propagating that operator as Ψ Kⁿ and "
-        "reading the state coordinates back out through the fixed inverse state "
-        "map, so nothing is fitted per lead and nothing is fitted to the index — "
-        "the same construction as the published resting-EEG rollout"
-        if rung == "bso_prop" else
-        "per-lead coefficients are then regressed on the dictionary")
-
+    """Deprecated: the maintained caption lives in the experiment reference."""
     return (
-        f"Niño-3.4 forecast skill on ERSSTv5, leads 1–{horizon}. The BSO "
-        f"forecasts the index directly: a reduced state — {predictor} — is "
-        "advanced by a frozen neural operator, a dictionary Ψ(z) = [1, z, h(z)] "
-        "is fitted against that operator by the Galerkin invariance objective, "
-        f"and {forecast}. LIM is the linear inverse model of Wang, Slawinska and "
-        f"Giannakis (2020) on {COMMON_MODES} weighted EOF coefficients — a "
-        "propagator estimated at a two-month lag, other leads by its fractional "
-        "powers — fitted by ordinary least squares, since its regularisation is "
-        "the principal-component truncation. Both forecasts decay to zero "
-        "anomaly, the climatology the index is defined against, so the error "
-        f"panel compares error rather than offset. {ahead}.{seed_note} The full "
-        "ladder, including a per-lead linear control on the same state that "
-        "isolates the learned dictionary, is reported in the accompanying table — "
-        "these panels do not by themselves separate the dictionary from the state "
-        "it is given. "
-        "Climatology has undefined anomaly correlation (a zero-anomaly forecast "
-        "has zero variance) so it appears in the error panel alone, drawn as "
-        "its lead-average. Damped persistence has exactly the correlation of "
-        "plain persistence, because correlation is invariant to the positive "
-        "per-lead scaling γ^τ; damping is visible in RMSE only.")
+        "OUTDATED autogenerated caption — do not use. See the ‘Suggested paper "
+        "description’ in ENSO_L96_experiment_setup.md, section 2c."
+    )
 
 
 def main() -> None:

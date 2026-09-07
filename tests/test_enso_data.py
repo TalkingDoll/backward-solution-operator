@@ -617,6 +617,10 @@ def test_acc_difference_interval_covers_zero_for_identical_forecasts():
                                        n_samples=200)
     assert np.all(lower > 0.0)
 
+    _, upper = acc_difference_interval(worse, pred, truth, horizon=4,
+                                       n_samples=200)
+    assert np.all(upper < 0.0)
+
 
 def test_ladder_rungs_share_one_state_width_so_only_the_method_differs():
     """The dictionary, its linear control and the MLP take the same input."""
@@ -651,3 +655,92 @@ def test_index_bso_linear_control_is_per_lead_regression_on_the_delay_state():
                                    rcond=None)[0]
         np.testing.assert_allclose(weights[lead - 1], expected, atol=1e-5)
     assert predict_lim_direct(weights, states[origins]).shape == (len(origins), 4)
+
+
+def test_matched_lim_uses_the_bso_state_window_and_fixed_readout():
+    """Matched LIM changes only the propagator, not state rows or output map."""
+    from experiments.enso.exp_enso import fit_lim, lim_forecast
+    from experiments.enso.exp_enso_index import (
+        _pair_ends, matched_lim_forecast, propagated_forecast)
+
+    rng = np.random.default_rng(21)
+    history, train_end, horizon = 3, 60, 4
+    states = np.full((85, 3), np.nan)
+    states[history - 1] = rng.normal(size=3)
+    true_transition = np.array([
+        [0.75, 0.10, 0.00],
+        [0.00, 0.80, 0.15],
+        [0.05, 0.00, 0.70],
+    ])
+    for row in range(history, len(states)):
+        states[row] = states[row - 1] @ true_transition.T
+    origins = np.arange(62, 70)
+    readout = lambda state: state[:, 0] - 0.5 * state[:, 2]
+
+    prediction, transition = matched_lim_forecast(
+        states, readout, train_end, origins, horizon,
+        history=history, ridge=1e-6)
+    expected_transition = fit_lim(states[history - 1:train_end], ridge=1e-6)
+    expected_rollout = lim_forecast(
+        expected_transition, states[origins], horizon)
+    expected_prediction = np.stack(
+        [readout(expected_rollout[:, lead]) for lead in range(horizon)], axis=1)
+
+    np.testing.assert_allclose(transition, expected_transition)
+    np.testing.assert_allclose(prediction, expected_prediction)
+    assert len(states[history - 1:train_end]) - 1 == train_end - history
+
+    # These are the rows passed to phase A/B in ``run``.  They must be the two
+    # sides of precisely the same transition window consumed by ``fit_lim``.
+    bso_ends = _pair_ends(history - 1, train_end)
+    lim_fit_states = states[history - 1:train_end]
+    np.testing.assert_array_equal(states[bso_ends], lim_fit_states[:-1])
+    np.testing.assert_array_equal(states[bso_ends + 1], lim_fit_states[1:])
+
+    # Embed the fitted LIM in a [1, z] dictionary transition.  If both rollout
+    # paths receive the same launches and fixed readout, their decoded forecasts
+    # are identical when their propagators are identical.
+    dictionary_transition = np.zeros((states.shape[1] + 1,) * 2)
+    dictionary_transition[0, 0] = 1.0
+    dictionary_transition[1:, 1:] = transition.T
+    psi = np.column_stack([np.ones(len(states)), states])
+    seen = []
+
+    def shared_readout(state):
+        seen.append(np.array(state, copy=True))
+        return state[:, 0] - 0.5 * state[:, 2]
+
+    matched_with_shared_readout, _ = matched_lim_forecast(
+        states, shared_readout, train_end, origins, horizon,
+        history=history, ridge=1e-6)
+    propagated_with_shared_readout = propagated_forecast(
+        psi, dictionary_transition, states.shape[1], shared_readout,
+        origins, horizon)
+    for lim_input, bso_input in zip(seen[:horizon], seen[horizon:]):
+        np.testing.assert_allclose(lim_input, bso_input)
+    np.testing.assert_allclose(
+        matched_with_shared_readout, propagated_with_shared_readout)
+
+
+def test_final_presentation_uses_the_matched_eof_state_lim():
+    from experiments.enso.exp_enso_index import (
+        MATCHED_LIM_KEY, MATCHED_STATE, PRESENTATION_LIM,
+        PRESENTATION_RUNG, PRESENTATION_STATE, presentation_style)
+
+    assert MATCHED_STATE == PRESENTATION_STATE == "eof"
+    assert MATCHED_LIM_KEY == PRESENTATION_LIM == "lim_matched_eof"
+    assert PRESENTATION_RUNG == "bso_prop"
+    style = presentation_style()
+    assert tuple(style) == (
+        "bso_prop_eof", "lim_matched_eof",
+        "damped_persistence", "climatology")
+    assert style["lim_matched_eof"]["label"] == "Matched LIM"
+    assert "lim_wang" not in style
+
+
+def test_separation_spans_report_both_directions():
+    from experiments.enso.exp_enso_index import _separation_spans
+
+    lower = np.array([-0.1, 0.01, 0.02, -0.2, -0.3, -0.4])
+    upper = np.array([0.1, 0.2, 0.3, 0.2, -0.01, -0.02])
+    assert _separation_spans(lower, upper) == ([(2, 3)], [(5, 6)])

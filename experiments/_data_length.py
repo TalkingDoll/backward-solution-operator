@@ -440,7 +440,24 @@ def run_sweep(
 # Figures and persistence
 # ---------------------------------------------------------------------------
 
-def _curve(ax, lengths, per_seed, method, target_M, mask=None, *, bands=True):
+def _method_label(method: str, target_M: int, *, rank_labels: bool = False) -> str:
+    """Return the default or rank-explicit label for a plotted method."""
+    if rank_labels:
+        labels = {
+            "data_edmd": f"Data EDMD (rank = {target_M})",
+            "data_edmd_npairs": f"Data EDMD (rank = min(n, {target_M}))",
+            "data_edmd_forced_ridge":
+                f"Data EDMD (rank = {target_M}, ridge)",
+            "data_edmd_forced_pinv":
+                f"Data EDMD (rank = {target_M}, min-norm)",
+        }
+        if method in labels:
+            return labels[method]
+    return METHOD_STYLE[method]["label"].format(M=target_M)
+
+
+def _curve(ax, lengths, per_seed, method, target_M, mask=None, *, bands=True,
+           rank_labels: bool = False):
     """Median (+IQR) curve for one method; ``mask`` restricts the N range.
 
     ``bands=False`` drops the 25-75 percentile shading and draws medians only,
@@ -448,7 +465,7 @@ def _curve(ax, lengths, per_seed, method, target_M, mask=None, *, bands=True):
     overlap. The medians are computed identically either way.
     """
     style = METHOD_STYLE[method]
-    label = style["label"].format(M=target_M)
+    label = _method_label(method, target_M, rank_labels=rank_labels)
     lengths = np.asarray(lengths)
     values = np.asarray(per_seed, dtype=np.float64)
     if mask is not None:
@@ -474,7 +491,8 @@ def _curve(ax, lengths, per_seed, method, target_M, mask=None, *, bands=True):
                                 linewidth=0.0, zorder=style["zorder"] - 1)
 
 
-def _forced_curves(ax, result: DataLengthResult, *, bands: bool = True) -> None:
+def _forced_curves(ax, result: DataLengthResult, *, bands: bool = True,
+                   rank_labels: bool = False) -> None:
     """Draw the forced full-dimensional EDMD fits, only where ``N < M``.
 
     Above ``M`` the ridge-forced fit is the *same* computation as
@@ -486,18 +504,21 @@ def _forced_curves(ax, result: DataLengthResult, *, bands: bool = True) -> None:
         return
     for method in FORCED_METHODS:
         _curve(ax, result.lengths, result.one_step[method], method,
-               result.target_M, mask=mask, bands=bands)
+               result.target_M, mask=mask, bands=bands,
+               rank_labels=rank_labels)
 
 
-def _mark_M(ax, target_M):
+def _mark_M(ax, target_M, *, annotate: bool = True):
     ax.axvline(target_M, color=GRID_COLOR, linestyle="--",
                linewidth=LINEWIDTH["reference"], zorder=1)
-    ax.annotate(f"M={target_M}", (target_M, 0.98),
-                xycoords=("data", "axes fraction"), ha="center", va="top",
-                fontsize=8, color=TEXT_COLOR, zorder=6)
+    if annotate:
+        ax.annotate(f"M={target_M}", (target_M, 0.98),
+                    xycoords=("data", "axes fraction"), ha="center", va="top",
+                    fontsize=8, color=TEXT_COLOR, zorder=6)
 
 
-def _finish_axis(ax, lengths, *, ylabel, title):
+def _finish_axis(ax, lengths, *, ylabel, title,
+                 xlabel="Number of training pairs N"):
     """The log-N axis every data-length figure shares, stated explicitly.
 
     The log locator would label only the decades (10, 100) and render them as
@@ -508,13 +529,58 @@ def _finish_axis(ax, lengths, *, ylabel, title):
     ax.set_xlim(float(np.min(lengths)) * 0.85, float(np.max(lengths)) * 1.18)
     ax.set_xticks([10, 100])
     ax.xaxis.set_major_formatter(ScalarFormatter())
-    style_axis(ax, xlabel="Number of training pairs N", ylabel=ylabel,
-               title=title, grid=True)
+    style_axis(ax, xlabel=xlabel, ylabel=ylabel, title=title, grid=True)
 
 
 def _band_tag(bands: bool) -> str:
     """Filename marker keeping the median-only variant beside the banded one."""
     return "" if bands else "_nobands"
+
+
+def plot_one_step(result: DataLengthResult, figure_dir: Path, system: str,
+                  title_suffix: str = "", *, bands: bool = True,
+                  variant: str = "standard", filename_tag: str = "",
+                  xlabel: str = "Number of training pairs N",
+                  rank_labels: bool = False,
+                  annotate_target: bool = True) -> Path:
+    """Plot one selected one-step data-length comparison.
+
+    Variant is either "standard" (fixed-rank Data EDMD) or "npairs"
+    (best-feasible rank). The text and filename options let a system publish a
+    narrowly tailored companion without changing the shared defaults used by
+    the other data-length experiments.
+    """
+    variants = {
+        "standard": ("", ("fno", "bno", "data_edmd")),
+        "npairs": ("_npairs", ("fno", "bno", "data_edmd_npairs")),
+    }
+    if variant not in variants:
+        raise ValueError("variant must be 'standard' or 'npairs', got "
+                         f"{variant!r}")
+    tag, methods = variants[variant]
+    figure_dir.mkdir(parents=True, exist_ok=True)
+    suffix = f" {title_suffix}".rstrip()
+    slug = re.sub(r"[^0-9a-z]+", "_", system.lower()).strip("_")
+    with publication_style():
+        fig, axes = make_figure(LAYOUT_DATA_LENGTH)
+        ax = axes[0, 0]
+        for method in methods:
+            _curve(ax, result.lengths, result.one_step[method], method,
+                   result.target_M, bands=bands, rank_labels=rank_labels)
+        _forced_curves(ax, result, bands=bands, rank_labels=rank_labels)
+        _mark_M(ax, result.target_M, annotate=annotate_target)
+        _finish_axis(ax, result.lengths,
+                     ylabel="One-step generalization\n(relative $L^2$)",
+                     title=f"{system}{suffix}", xlabel=xlabel)
+        add_legend(fig, *ax.get_legend_handles_labels(),
+                   loc=LAYOUT_DATA_LENGTH["legend_loc"],
+                   bbox_to_anchor=LAYOUT_DATA_LENGTH["legend_bbox"],
+                   ncol=LAYOUT_DATA_LENGTH["legend_ncol"])
+        pdf, _ = save_publication_pair(
+            fig, figure_dir / f"{slug}_one_step_vs_pairs{tag}{filename_tag}"
+                               f"{_band_tag(bands)}.pdf")
+        plt.close(fig)
+    return pdf
 
 
 def plot_two_versions(result: DataLengthResult, figure_dir: Path, system: str,
@@ -528,34 +594,11 @@ def plot_two_versions(result: DataLengthResult, figure_dir: Path, system: str,
 
     ``bands=False`` writes a ``_nobands`` companion showing medians only.
     """
-    figure_dir.mkdir(parents=True, exist_ok=True)
-    suffix = f" {title_suffix}".rstrip()
-    slug = re.sub(r"[^0-9a-z]+", "_", system.lower()).strip("_")
     outputs = []
-    for tag, methods in (
-        ("", ("fno", "bno", "data_edmd")),                  # typical comparisons
-        ("_npairs", ("fno", "bno", "data_edmd_npairs")),    # M=min(N,p)
-    ):
-        with publication_style():
-            fig, axes = make_figure(LAYOUT_DATA_LENGTH)
-            ax = axes[0, 0]
-            for method in methods:
-                _curve(ax, result.lengths, result.one_step[method], method,
-                       result.target_M, bands=bands)
-            _forced_curves(ax, result, bands=bands)
-            _mark_M(ax, result.target_M)
-            _finish_axis(ax, result.lengths,
-                         ylabel="One-step generalization\n(relative $L^2$)",
-                         title=f"{system}{suffix}")
-            add_legend(fig, *ax.get_legend_handles_labels(),
-                       loc=LAYOUT_DATA_LENGTH["legend_loc"],
-                       bbox_to_anchor=LAYOUT_DATA_LENGTH["legend_bbox"],
-                       ncol=LAYOUT_DATA_LENGTH["legend_ncol"])
-            pdf, _ = save_publication_pair(
-                fig, figure_dir / f"{slug}_one_step_vs_pairs{tag}"
-                                  f"{_band_tag(bands)}.pdf")
-            plt.close(fig)
-        outputs.append(pdf)
+    for variant in ("standard", "npairs"):
+        outputs.append(plot_one_step(
+            result, figure_dir, system, title_suffix, bands=bands,
+            variant=variant))
     return tuple(outputs)
 
 

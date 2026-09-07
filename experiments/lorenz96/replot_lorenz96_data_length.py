@@ -11,17 +11,37 @@ Usage:
 
 from __future__ import annotations
 
+import argparse
 import sys
 
 sys.dont_write_bytecode = True
 
 from experiments._data_length import load_result, plot_two_versions
+from experiments.lorenz96.exp_lorenz96_data_length import (
+    plot_reference_figure, result_path)
 from project_paths import FIGURES_DIR, RESULTS_DIR
 
 TITLE_SUFFIX = "(K=40, F=8)"
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--target-m", type=int, choices=(20, 40), default=None,
+        help="replot only the rank-specific no-bands reference figure")
+    args = parser.parse_args()
+
+    if args.target_m is not None:
+        results = result_path(int(args.target_m))
+        if not results.exists():
+            raise SystemExit(
+                f"{results} not found; run experiments.lorenz96."
+                "exp_lorenz96_data_length with "
+                f"--target-m {args.target_m} first")
+        pdf = plot_reference_figure(load_result(results))
+        print(f"[lorenz96:data-length] replotted: {pdf}")
+        return
+
     results = RESULTS_DIR / "l96_data_length" / "l96_data_length_results.npz"
     if not results.exists():
         raise SystemExit(

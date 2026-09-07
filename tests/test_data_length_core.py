@@ -1,13 +1,41 @@
 import inspect
 
 import pytest
+import matplotlib.pyplot as plt
 import numpy as np
 from torch import nn
 
-from experiments._data_length import (_coordinates, _one_step, _valid_time,
+from experiments._data_length import (_coordinates, _mark_M, _method_label,
+                                       _one_step, _valid_time,
                                        dictionary_rollout, fit_projected_edmd,
                                        gram_diagnostics, operator_ensemble,
                                        run_sweep)
+
+
+@pytest.mark.parametrize(
+    ("method", "target_m", "expected"),
+    [
+        ("data_edmd_npairs", 20, "Data EDMD (rank = min(n, 20))"),
+        ("data_edmd_npairs", 40, "Data EDMD (rank = min(n, 40))"),
+        ("data_edmd_forced_ridge", 20,
+         "Data EDMD (rank = 20, ridge)"),
+        ("data_edmd_forced_pinv", 40,
+         "Data EDMD (rank = 40, min-norm)"),
+    ],
+)
+def test_rank_labels_include_the_selected_target(method, target_m, expected):
+    assert _method_label(method, target_m, rank_labels=True) == expected
+
+
+def test_target_reference_line_can_be_drawn_without_an_annotation():
+    fig, ax = plt.subplots()
+    try:
+        _mark_M(ax, 20, annotate=False)
+        assert len(ax.lines) == 1
+        assert list(ax.lines[0].get_xdata()) == [20, 20]
+        assert not ax.texts
+    finally:
+        plt.close(fig)
 
 
 class _Identity(nn.Module):

@@ -1,0 +1,147 @@
+[enso-index] loaded phase-A checkpoint /home/clairev/Research/FNO-koopman/neural_koopman/results/enso_index/phase_a_eof.pt
+[enso-index] loaded phase-B checkpoint /home/clairev/Research/FNO-koopman/neural_koopman/results/enso_index/phase_b_eof.pt
+[enso-index] loaded MLP checkpoint /home/clairev/Research/FNO-koopman/neural_koopman/results/enso_index/mlp_eof_h12.pt
+[enso-index] loaded phase-A checkpoint /home/clairev/Research/FNO-koopman/neural_koopman/results/enso_index/phase_a_index.pt
+[enso-index] loaded phase-B checkpoint /home/clairev/Research/FNO-koopman/neural_koopman/results/enso_index/phase_b_index.pt
+[enso-index] loaded MLP checkpoint /home/clairev/Research/FNO-koopman/neural_koopman/results/enso_index/mlp_index_h12.pt
+[enso-direct] loaded checkpoint /home/clairev/Research/FNO-koopman/neural_koopman/results/enso/direct.pt
+
+[enso-index] 1633 fitting origins, 192 verification origins
+[enso-index] eof   state: dim 12, dictionary 1 + 12 + 11 = 24, invariance MSE 9.350e-05, rho(K) 1.0001
+[enso-index] index state: dim 12, dictionary 1 + 12 + 11 = 24, invariance MSE 2.771e-04, rho(K) 1.0000
+
+[enso-index] Niño-3.4 anomaly correlation at leads      1      3      6      9     12
+  LIM (propagated lag-1, OLS)      0.97   0.86   0.59   0.26   0.03
+  LIM (Wang et al. t0=2, OLS)      0.97   0.87   0.60   0.28   0.05
+  LIM (per-lead lagged, OLS)       0.97   0.88   0.64   0.34   0.06
+  Linear control (raw 12x20 delay)   0.97   0.86   0.54   0.23   0.14
+  Linear (index state)             0.97   0.82   0.48   0.12   0.14
+  BSO (index state)                0.97   0.84   0.57   0.29   0.14
+  BSO propagated rollout (index)   0.97   0.84   0.57   0.29   0.18
+  MLP (index state)                0.97   0.84   0.59   0.40   0.38
+  Linear (EOF state)               0.92   0.78   0.50   0.24   0.21
+  BSO (EOF state)                  0.93   0.79   0.48   0.27   0.20
+  BSO propagated rollout (EOF)     0.93   0.83   0.56   0.30   0.19
+  MLP (EOF state)                  0.86   0.69   0.35   0.21   0.21
+  FNO (full field, unmatched)      0.96   0.84   0.63   0.38   0.23
+  Damped persistence               0.96   0.76   0.37   0.06  -0.05
+  Climatology                       nan    nan    nan    nan    nan
+
+[enso-index] Niño-3.4 RMSE (°C) at leads      1      3      6      9     12
+  LIM (propagated lag-1, OLS)      0.22   0.48   0.78   0.95   1.00
+  LIM (Wang et al. t0=2, OLS)      0.22   0.48   0.77   0.93   0.97
+  LIM (per-lead lagged, OLS)       0.23   0.50   0.80   0.97   1.05
+  Linear control (raw 12x20 delay)   0.23   0.53   0.82   0.90   0.91
+  Linear (index state)             0.23   0.55   0.85   0.98   0.98
+  BSO (index state)                0.22   0.53   0.81   0.96   0.97
+  BSO propagated rollout (index)   0.21   0.50   0.77   0.92   0.96
+  MLP (index state)                0.23   0.52   0.79   0.94   0.97
+  Linear (EOF state)               0.37   0.60   0.82   0.89   0.89
+  BSO (EOF state)                  0.33   0.60   0.82   0.89   0.90
+  BSO propagated rollout (EOF)     0.35   0.58   0.88   1.05   1.11
+  MLP (EOF state)                  0.47   0.70   1.10   1.32   1.25
+  FNO (full field, unmatched)      0.29   0.57   0.79   0.96   0.97
+  Damped persistence               0.26   0.59   0.86   0.95   0.95
+  Climatology                      0.92   0.92   0.92   0.92   0.91
+
+[enso-index] ACC(BSO) - ACC(linear control), same state, 95% block bootstrap at leads      1      3      6      9     12
+  eof   delta                      0.01   0.01  -0.03   0.03  -0.01
+  eof   95% CI lower              -0.01   0.01  -0.04   0.00  -0.04
+  eof   95% CI upper               0.03   0.02  -0.02   0.05   0.01
+  eof   dictionary is ahead of its control at leads 3–4, 8–9
+  index delta                      0.00   0.02   0.09   0.16  -0.00
+  index 95% CI lower              -0.00  -0.01   0.01   0.01  -0.01
+  index 95% CI upper               0.00   0.04   0.15   0.31   0.01
+  index dictionary is ahead of its control at leads 6–9
+
+[enso-index] figure claim: ACC(bso_prop_index) - ACC(lim_wang), 95% block bootstrap at leads      1      3      6      9     12
+  delta                     -0.00  -0.03  -0.03   0.01   0.13
+  95% CI lower              -0.00  -0.07  -0.11  -0.18  -0.21
+  95% CI upper               0.00  -0.00   0.04   0.17   0.42
+  BSO is ahead of the LIM at leads none
+
+[enso-index] selected ridge (min–max over leads), blocked CV:
+  Linear control (raw 12x20 delay) 3.16e-02 – 3.16e+00
+  Linear (index state)           3.16e-03 – 1.00e-01
+  BSO (index state)              3.16e-06 – 3.16e-01
+  Linear (EOF state)             3.16e-02 – 3.16e-01
+  BSO (EOF state)                1.00e-08 – 1.00e+00
+
+[enso-index] 12-month figure written to /home/clairev/Research/FNO-koopman/neural_koopman/figures/enso/nino34_forecast_skill.pdf
+[enso-index] diagnostic figure written to /home/clairev/Research/FNO-koopman/neural_koopman/figures/enso/enso_index_prediction_skill.pdf
+
+Figure caption:
+Niño-3.4 forecast skill on ERSSTv5, leads 1–12. The BSO forecasts the index directly: a reduced state — the 12-month Niño-3.4 history — is advanced by a frozen neural operator, a dictionary Ψ(z) = [1, z, h(z)] is fitted against that operator by the Galerkin invariance objective, and every lead is then obtained by propagating that operator as Ψ Kⁿ and reading the state coordinates back out through the fixed inverse state map, so nothing is fitted per lead and nothing is fitted to the index — the same construction as the published resting-EEG rollout. LIM is the linear inverse model of Wang, Slawinska and Giannakis (2020) on 20 weighted EOF coefficients — a propagator estimated at a two-month lag, other leads by its fractional powers — fitted by ordinary least squares, since its regularisation is the principal-component truncation. Both forecasts decay to zero anomaly, the climatology the index is defined against, so the error panel compares error rather than offset. The two are not separated at any lead by a 95 % block bootstrap on the paired per-lead difference: on this record, with this information, the neural-operator forecast matches the classical benchmark rather than beating it. A single training seed is plotted; retraining changes long-lead correlation appreciably while leaving leads 1–4 within 0.03 ACC, with lead 12 spanning 0.14–0.34 over 3 seeds, so the long-lead values should be read as indicative rather than as point estimates. The full ladder, including a per-lead linear control on the same state that isolates the learned dictionary, is reported in the accompanying table — these panels do not by themselves separate the dictionary from the state it is given. Climatology has undefined anomaly correlation (a zero-anomaly forecast has zero variance) so it appears in the error panel alone, drawn as its lead-average. Damped persistence has exactly the correlation of plain persistence, because correlation is invariant to the positive per-lead scaling γ^τ; damping is visible in RMSE only.
+[enso-index] loaded phase-A checkpoint /home/clairev/Research/FNO-koopman/neural_koopman/results/enso_index/phase_a_eof.pt
+[enso-index] loaded phase-B checkpoint /home/clairev/Research/FNO-koopman/neural_koopman/results/enso_index/phase_b_eof.pt
+[enso-index] loaded MLP checkpoint /home/clairev/Research/FNO-koopman/neural_koopman/results/enso_index/mlp_eof_h24.pt
+[enso-index] loaded phase-A checkpoint /home/clairev/Research/FNO-koopman/neural_koopman/results/enso_index/phase_a_index.pt
+[enso-index] loaded phase-B checkpoint /home/clairev/Research/FNO-koopman/neural_koopman/results/enso_index/phase_b_index.pt
+[enso-index] loaded MLP checkpoint /home/clairev/Research/FNO-koopman/neural_koopman/results/enso_index/mlp_index_h24.pt
+[enso-direct] loaded checkpoint /home/clairev/Research/FNO-koopman/neural_koopman/results/enso/direct_h24.pt
+
+[enso-index] 1621 fitting origins, 203 verification origins (203 at lead 1 falling to 180 at lead 24)
+[enso-index] eof   state: dim 12, dictionary 1 + 12 + 11 = 24, invariance MSE 9.350e-05, rho(K) 1.0001
+[enso-index] index state: dim 12, dictionary 1 + 12 + 11 = 24, invariance MSE 2.771e-04, rho(K) 1.0000
+
+[enso-index] Niño-3.4 anomaly correlation at leads      1      3      6      9     12     18     24
+  LIM (propagated lag-1, OLS)      0.97   0.86   0.58   0.26   0.03  -0.13  -0.12
+  LIM (Wang et al. t0=2, OLS)      0.97   0.87   0.60   0.29   0.05  -0.03   0.26
+  LIM (per-lead lagged, OLS)       0.97   0.88   0.64   0.35   0.06   0.08   0.13
+  Linear control (raw 12x20 delay)   0.97   0.86   0.54   0.24   0.13   0.26   0.37
+  Linear (index state)             0.97   0.82   0.48   0.12   0.14   0.28   0.33
+  BSO (index state)                0.97   0.84   0.56   0.29   0.14   0.27   0.33
+  BSO propagated rollout (index)   0.97   0.84   0.56   0.29   0.18   0.17   0.17
+  MLP (index state)                0.97   0.83   0.57   0.40   0.43   0.30   0.19
+  Linear (EOF state)               0.92   0.78   0.51   0.24   0.21   0.26   0.32
+  BSO (EOF state)                  0.93   0.79   0.48   0.27   0.20   0.29   0.35
+  BSO propagated rollout (EOF)     0.93   0.83   0.56   0.31   0.19   0.21   0.11
+  MLP (EOF state)                  0.92   0.87   0.63   0.37   0.35   0.25   0.05
+  FNO (full field, unmatched)      0.94   0.85   0.57   0.36   0.23   0.13   0.20
+  Damped persistence               0.96   0.76   0.35   0.05  -0.05  -0.13  -0.32
+  Climatology                       nan    nan    nan    nan    nan    nan    nan
+
+[enso-index] Niño-3.4 RMSE (°C) at leads      1      3      6      9     12     18     24
+  LIM (propagated lag-1, OLS)      0.21   0.47   0.77   0.94   1.00   0.97   0.93
+  LIM (Wang et al. t0=2, OLS)      0.22   0.47   0.76   0.92   0.97   0.94   0.91
+  LIM (per-lead lagged, OLS)       0.23   0.50   0.80   0.96   1.04   0.93   0.91
+  Linear control (raw 12x20 delay)   0.23   0.52   0.81   0.89   0.91   0.90   0.89
+  Linear (index state)             0.22   0.54   0.84   0.97   0.98   0.98   0.96
+  BSO (index state)                0.22   0.52   0.81   0.95   0.97   0.98   0.95
+  BSO propagated rollout (index)   0.21   0.50   0.77   0.92   0.96   0.98   0.96
+  MLP (index state)                0.24   0.53   0.82   0.95   0.96   1.00   1.00
+  Linear (EOF state)               0.37   0.59   0.81   0.88   0.89   0.90   0.89
+  BSO (EOF state)                  0.33   0.59   0.81   0.88   0.90   0.89   0.88
+  BSO propagated rollout (EOF)     0.35   0.57   0.88   1.05   1.11   1.08   1.04
+  MLP (EOF state)                  0.43   0.52   0.76   0.94   0.93   1.06   1.15
+  FNO (full field, unmatched)      0.32   0.56   0.79   0.91   0.96   0.98   0.93
+  Damped persistence               0.26   0.59   0.85   0.94   0.94   0.94   0.93
+  Climatology                      0.91   0.90   0.90   0.91   0.91   0.92   0.91
+
+[enso-index] ACC(BSO) - ACC(linear control), same state, 95% block bootstrap at leads      1      3      6      9     12     18     24
+  eof   delta                      0.01   0.01  -0.03   0.03  -0.01   0.02   0.03
+  eof   95% CI lower              -0.01   0.01  -0.04   0.01  -0.03  -0.01  -0.05
+  eof   95% CI upper               0.03   0.02  -0.02   0.05   0.01   0.05   0.10
+  eof   dictionary is ahead of its control at leads 3–4, 8–9
+  index delta                      0.00   0.02   0.09   0.17  -0.00  -0.00  -0.00
+  index 95% CI lower              -0.00  -0.01   0.01   0.02  -0.01  -0.01  -0.03
+  index 95% CI upper               0.00   0.04   0.15   0.30   0.01   0.00   0.02
+  index dictionary is ahead of its control at leads 6–9
+
+[enso-index] figure claim: ACC(bso_prop_index) - ACC(lim_wang), 95% block bootstrap at leads      1      3      6      9     12     18     24
+  delta                     -0.00  -0.03  -0.04   0.00   0.13   0.20  -0.09
+  95% CI lower              -0.00  -0.07  -0.10  -0.16  -0.17  -0.20  -0.41
+  95% CI upper               0.00  -0.00   0.03   0.17   0.47   0.67   0.25
+  BSO is ahead of the LIM at leads none
+
+[enso-index] selected ridge (min–max over leads), blocked CV:
+  Linear control (raw 12x20 delay) 3.16e-02 – 1.00e+01
+  Linear (index state)           3.16e-03 – 1.00e-01
+  BSO (index state)              3.16e-06 – 3.16e-01
+  Linear (EOF state)             3.16e-02 – 1.00e+00
+  BSO (EOF state)                1.00e-08 – 1.00e+00
+
+[enso-index] 24-month figure written to /home/clairev/Research/FNO-koopman/neural_koopman/figures/enso/nino34_forecast_skill_long.pdf
+
+Figure caption:
+Niño-3.4 forecast skill on ERSSTv5, leads 1–24. The BSO forecasts the index directly: a reduced state — the 12-month Niño-3.4 history — is advanced by a frozen neural operator, a dictionary Ψ(z) = [1, z, h(z)] is fitted against that operator by the Galerkin invariance objective, and every lead is then obtained by propagating that operator as Ψ Kⁿ and reading the state coordinates back out through the fixed inverse state map, so nothing is fitted per lead and nothing is fitted to the index — the same construction as the published resting-EEG rollout. LIM is the linear inverse model of Wang, Slawinska and Giannakis (2020) on 20 weighted EOF coefficients — a propagator estimated at a two-month lag, other leads by its fractional powers — fitted by ordinary least squares, since its regularisation is the principal-component truncation. Both forecasts decay to zero anomaly, the climatology the index is defined against, so the error panel compares error rather than offset. The two are not separated at any lead by a 95 % block bootstrap on the paired per-lead difference: on this record, with this information, the neural-operator forecast matches the classical benchmark rather than beating it. A single training seed is plotted; retraining changes long-lead correlation appreciably while leaving leads 1–4 within 0.03 ACC, with lead 24 spanning 0.14–0.34 over 3 seeds, so the long-lead values should be read as indicative rather than as point estimates. The full ladder, including a per-lead linear control on the same state that isolates the learned dictionary, is reported in the accompanying table — these panels do not by themselves separate the dictionary from the state it is given. Climatology has undefined anomaly correlation (a zero-anomaly forecast has zero variance) so it appears in the error panel alone, drawn as its lead-average. Damped persistence has exactly the correlation of plain persistence, because correlation is invariant to the positive per-lead scaling γ^τ; damping is visible in RMSE only.
