@@ -56,7 +56,7 @@ def plot_reference_figure(result) -> Path:
         result, FIGURES_DIR / "lorenz96", "Lorenz-96",
         title_suffix=REFERENCE_TITLE_SUFFIX, bands=False, variant="npairs",
         filename_tag=filename_tag, xlabel="Number of training pairs n",
-        rank_labels=True, annotate_target=False)
+        dimension_labels=True, annotate_target=False)
 
 
 def _model_kwargs(quick: bool) -> dict:

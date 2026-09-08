@@ -440,16 +440,17 @@ def run_sweep(
 # Figures and persistence
 # ---------------------------------------------------------------------------
 
-def _method_label(method: str, target_M: int, *, rank_labels: bool = False) -> str:
-    """Return the default or rank-explicit label for a plotted method."""
-    if rank_labels:
+def _method_label(method: str, target_M: int, *,
+                  dimension_labels: bool = False) -> str:
+    """Return the default or dimension-explicit label for a plotted method."""
+    if dimension_labels:
         labels = {
-            "data_edmd": f"Data EDMD (rank = {target_M})",
-            "data_edmd_npairs": f"Data EDMD (rank = min(n, {target_M}))",
+            "data_edmd": f"Data EDMD (dim = {target_M})",
+            "data_edmd_npairs": f"Data EDMD (dim = min(n, {target_M}))",
             "data_edmd_forced_ridge":
-                f"Data EDMD (rank = {target_M}, ridge)",
+                f"Data EDMD (dim = {target_M}, ridge)",
             "data_edmd_forced_pinv":
-                f"Data EDMD (rank = {target_M}, min-norm)",
+                f"Data EDMD (dim = {target_M}, min-norm)",
         }
         if method in labels:
             return labels[method]
@@ -457,7 +458,7 @@ def _method_label(method: str, target_M: int, *, rank_labels: bool = False) -> s
 
 
 def _curve(ax, lengths, per_seed, method, target_M, mask=None, *, bands=True,
-           rank_labels: bool = False):
+           dimension_labels: bool = False):
     """Median (+IQR) curve for one method; ``mask`` restricts the N range.
 
     ``bands=False`` drops the 25-75 percentile shading and draws medians only,
@@ -465,7 +466,8 @@ def _curve(ax, lengths, per_seed, method, target_M, mask=None, *, bands=True,
     overlap. The medians are computed identically either way.
     """
     style = METHOD_STYLE[method]
-    label = _method_label(method, target_M, rank_labels=rank_labels)
+    label = _method_label(method, target_M,
+                          dimension_labels=dimension_labels)
     lengths = np.asarray(lengths)
     values = np.asarray(per_seed, dtype=np.float64)
     if mask is not None:
@@ -492,7 +494,7 @@ def _curve(ax, lengths, per_seed, method, target_M, mask=None, *, bands=True,
 
 
 def _forced_curves(ax, result: DataLengthResult, *, bands: bool = True,
-                   rank_labels: bool = False) -> None:
+                   dimension_labels: bool = False) -> None:
     """Draw the forced full-dimensional EDMD fits, only where ``N < M``.
 
     Above ``M`` the ridge-forced fit is the *same* computation as
@@ -505,7 +507,7 @@ def _forced_curves(ax, result: DataLengthResult, *, bands: bool = True,
     for method in FORCED_METHODS:
         _curve(ax, result.lengths, result.one_step[method], method,
                result.target_M, mask=mask, bands=bands,
-               rank_labels=rank_labels)
+               dimension_labels=dimension_labels)
 
 
 def _mark_M(ax, target_M, *, annotate: bool = True):
@@ -541,7 +543,7 @@ def plot_one_step(result: DataLengthResult, figure_dir: Path, system: str,
                   title_suffix: str = "", *, bands: bool = True,
                   variant: str = "standard", filename_tag: str = "",
                   xlabel: str = "Number of training pairs N",
-                  rank_labels: bool = False,
+                  dimension_labels: bool = False,
                   annotate_target: bool = True) -> Path:
     """Plot one selected one-step data-length comparison.
 
@@ -566,8 +568,10 @@ def plot_one_step(result: DataLengthResult, figure_dir: Path, system: str,
         ax = axes[0, 0]
         for method in methods:
             _curve(ax, result.lengths, result.one_step[method], method,
-                   result.target_M, bands=bands, rank_labels=rank_labels)
-        _forced_curves(ax, result, bands=bands, rank_labels=rank_labels)
+                   result.target_M, bands=bands,
+                   dimension_labels=dimension_labels)
+        _forced_curves(ax, result, bands=bands,
+                       dimension_labels=dimension_labels)
         _mark_M(ax, result.target_M, annotate=annotate_target)
         _finish_axis(ax, result.lengths,
                      ylabel="One-step generalization\n(relative $L^2$)",

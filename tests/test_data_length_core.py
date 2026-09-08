@@ -15,16 +15,17 @@ from experiments._data_length import (_coordinates, _mark_M, _method_label,
 @pytest.mark.parametrize(
     ("method", "target_m", "expected"),
     [
-        ("data_edmd_npairs", 20, "Data EDMD (rank = min(n, 20))"),
-        ("data_edmd_npairs", 40, "Data EDMD (rank = min(n, 40))"),
+        ("data_edmd_npairs", 20, "Data EDMD (dim = min(n, 20))"),
+        ("data_edmd_npairs", 40, "Data EDMD (dim = min(n, 40))"),
         ("data_edmd_forced_ridge", 20,
-         "Data EDMD (rank = 20, ridge)"),
+         "Data EDMD (dim = 20, ridge)"),
         ("data_edmd_forced_pinv", 40,
-         "Data EDMD (rank = 40, min-norm)"),
+         "Data EDMD (dim = 40, min-norm)"),
     ],
 )
-def test_rank_labels_include_the_selected_target(method, target_m, expected):
-    assert _method_label(method, target_m, rank_labels=True) == expected
+def test_dimension_labels_use_selected_target(method, target_m, expected):
+    assert _method_label(method, target_m,
+                         dimension_labels=True) == expected
 
 
 def test_target_reference_line_can_be_drawn_without_an_annotation():
