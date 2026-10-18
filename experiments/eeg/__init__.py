@@ -1,0 +1,1 @@
+"""EEG resting-state experiment."""

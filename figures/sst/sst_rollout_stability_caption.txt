@@ -1,0 +1,1 @@
+Area-weighted physical SST RMSE in a 540-day numerical stability test over 48 origins, shown over full and zoomed logarithmic ranges. BSO remains bounded, FNO reaches 816.327 K at day 540, and SFNO becomes nonfinite at day 171. FNO/SFNO validity uses the full 11-channel state, whereas BSO uses decoded SST; this is not a long-range skill ranking.
